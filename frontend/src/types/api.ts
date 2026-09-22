@@ -13,6 +13,48 @@ export interface ApiError {
   ts?: string
 }
 
+/** 滑动窗口限流器的运行状态（与后端 schemas/common.py::RateLimiterStats 对齐）
+ *
+ * ⚠️ 后端这两个 stats 模型开了 `extra="allow"`，将来加字段会**透传**过来，
+ *    所以这里用索引签名兜底，避免"后端加了字段、前端 TS 报错"的连锁改动。
+ */
+export interface RateLimiterStats {
+  name: string
+  min_interval: number
+  max_calls_per_minute: number | null
+  calls_in_window: number
+  window_seconds: number
+  total_calls: number
+  total_wait_seconds: number
+  max_wait_seconds: number
+  [key: string]: unknown
+}
+
+/** 熔断器状态。`open=true` 表示**当前正被熔断**，此期间一个请求都不会发出去。 */
+export interface CircuitBreakerStats {
+  name: string
+  open: boolean
+  remaining_seconds: number
+  cooldown_seconds: number
+  soft_cooldown_seconds: number
+  /** 连续 soft 失败计数（"疑似限频 2/3 次"里的 2） */
+  soft_strikes: number
+  soft_threshold: number
+  trip_count: number
+  last_trip_at: string | null
+  reason: string
+  [key: string]: unknown
+}
+
+/** 单个数据源的限流 / 熔断 / 缓存状态 */
+export interface ThrottleStats {
+  datasource: string
+  rate_limiter: RateLimiterStats | null
+  circuit_breaker: CircuitBreakerStats | null
+  cache: Record<string, unknown>
+  [key: string]: unknown
+}
+
 /** 数据源健康状态 */
 export interface DatasourceHealth {
   name: string
@@ -22,6 +64,8 @@ export interface DatasourceHealth {
   checked_at: string
   latency_ms: number | null
   cache: Record<string, number>
+  /** 限流 / 熔断状态。老版本后端不返回该字段时为 null/undefined。 */
+  throttle?: ThrottleStats | null
 }
 
 export interface CalendarStats {
@@ -65,6 +109,19 @@ export interface JobInfo {
   in_scheduler?: boolean
 }
 
+/** 启动补跑的进行状态（P1-1 新增）。
+ *
+ * 补跑现在跑在**后台线程**里，端口不再被它挡住 —— 所以"服务起来了但数据还在补"
+ * 这件事必须能被看到，否则用户会以为"页面没数据 = 服务坏了"。
+ */
+export interface CatchUpState {
+  running: boolean
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+  result: Record<string, unknown> | null
+}
+
 export interface SchedulerStatus {
   enabled: boolean
   running: boolean
@@ -72,6 +129,8 @@ export interface SchedulerStatus {
   job_count: number
   catch_up_on_startup: boolean
   catch_up_max_days: number
+  /** 后端老版本可能不返回该字段 */
+  catch_up?: CatchUpState
 }
 
 export interface HealthData {

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
 
@@ -45,6 +45,59 @@ class ErrorResponse(BaseModel):
 # ======================================================================
 # 系统相关
 # ======================================================================
+class RateLimiterStats(BaseModel):
+    """滑动窗口限流器的运行状态（`throttle.SlidingWindowRateLimiter.stats()`）。
+
+    ⚠️ `extra="allow"`：这里只是**透传**展示用状态，底层 `stats()` 将来加字段时，
+       不该因为"模型没声明"就在响应里凭空消失 —— 本项目已经在这上面栽过一次
+       （`coverage_end` 等日历字段被强类型模型静默丢弃，前端拿到 undefined）。
+       限流状态是给人看的诊断信息，多一个字段远比少一个字段危险得多。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str = ""
+    min_interval: float = 0.0
+    max_calls_per_minute: int | None = None
+    calls_in_window: int = 0
+    window_seconds: float = 60.0
+    total_calls: int = 0
+    total_wait_seconds: float = 0.0
+    max_wait_seconds: float = 0.0
+
+
+class CircuitBreakerStats(BaseModel):
+    """熔断器状态（`throttle.CircuitBreaker.stats()`）。
+
+    `open=True` 表示**当前正被熔断**，此期间一个请求都不会发出去；
+    `soft_strikes/soft_threshold` 用于显示"疑似限频 2/3 次"这类中间态。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str = ""
+    open: bool = False
+    remaining_seconds: float = 0.0
+    cooldown_seconds: float = 0.0
+    soft_cooldown_seconds: float = 0.0
+    soft_strikes: int = 0
+    soft_threshold: int = 0
+    trip_count: int = 0
+    last_trip_at: str | None = None
+    reason: str = ""
+
+
+class ThrottleStats(BaseModel):
+    """单个数据源的限流 / 熔断 / 缓存状态（`BaseDataSource.throttle_stats()`）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    datasource: str = ""
+    rate_limiter: RateLimiterStats | None = None
+    circuit_breaker: CircuitBreakerStats | None = None
+    cache: dict[str, Any] = Field(default_factory=dict)
+
+
 class DatasourceHealth(BaseModel):
     name: str
     available: bool
@@ -53,6 +106,12 @@ class DatasourceHealth(BaseModel):
     checked_at: str = ""
     latency_ms: float | None = None
     cache: dict[str, int] = Field(default_factory=dict)
+    #: ★ 限流 / 熔断状态（P1-3，2026-09-22 补声明）。
+    #:   数据一直由 `data_source.health_all()` 塞进 payload，但**没在模型里声明**
+    #:   → 被 Pydantic 静默丢掉，前端只能显示"数据源健康"却看不到限流，
+    #:   于是"不展示限流/熔断状态"这条遗留项一直挂着，还以为是前端没接。
+    #:   教训与项目问题清单第 16 条完全同源：**改 dict→强类型模型的接口必须同步改 schema**。
+    throttle: ThrottleStats | None = None
 
 
 class CalendarStats(BaseModel):

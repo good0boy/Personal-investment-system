@@ -83,22 +83,38 @@ def test_registry_loads_and_categories_ordered() -> None:
     reg = loader.load_registry()
     assert reg["version"] >= 1
     keys = [c.key for c in reg["categories"]]
-    assert keys == ["daily", "minute", "fundamental"], "分类顺序必须稳定（前端按序展示）"
+    assert keys == ["daily", "combo", "fundamental", "minute"], "分类顺序必须稳定（前端按序展示）"
+    # 顺序的唯一来源是 loader.CATEGORY_ORDER —— 两处各写一份必然漂移
+    assert keys == list(loader.CATEGORY_ORDER), "注册表顺序与 CATEGORY_ORDER 不一致"
     assert len(reg["factors"]) >= 8
 
 
 def test_category_status_matches_reality() -> None:
-    """三类状态必须如实反映"能不能算"。
+    """分类状态必须如实反映"能不能算" —— 对**所有**分类成立，不写死某一个。
 
-    daily 必须有因子可算；fundamental 必须是 blocked（本地没有财务/估值数据）
-    —— 如果哪天把 fundamental 标成 ready 却给不出因子，这个断言会拦住。
+    ★ 不变式（比列举具体分类更耐改）：
+      · ready   → 该分类下**必须**有可计算的因子（否则用户看到能点、点了没东西）；
+      · planned / blocked → 该分类下**必须没有**因子，且必须写明原因
+        （否则用户以为系统漏了一类）。
+    2026-09-22 启用 fundamental 时，正是这条不变式保证了"改成 ready 就必须真的给出因子"。
     """
     by_key = {c.key: c for c in loader.categories()}
+
     assert by_key["daily"].status == "ready"
-    assert by_key["daily"].available
-    assert by_key["fundamental"].status == "blocked"
-    assert not by_key["fundamental"].available
-    assert by_key["fundamental"].note, "blocked 分类必须写明原因，否则用户以为系统漏了"
+
+    for key, cat in by_key.items():
+        factors = loader.list_factors(key, include_disabled=True)
+        if cat.available:
+            assert factors, f"分类 {key} 标为 ready 却没有任何因子 —— 状态与实现不符"
+        else:
+            assert not factors, f"分类 {key} 标为 {cat.status} 却挂着因子"
+            assert (cat.note or cat.desc).strip(), (
+                f"{cat.status} 分类 {key} 必须写明原因，否则用户以为系统漏了"
+            )
+
+    # 本轮明确启用的两类
+    assert by_key["fundamental"].available, "基本面数据已回补，分类不应再是 blocked"
+    assert by_key["combo"].available
     assert by_key["minute"].status == "planned"
 
 
@@ -733,8 +749,11 @@ def test_cli_unknown_factor_returns_2(capsys) -> None:
     assert calc.main(["--name", "nope"]) == 2
 
 
-def test_cli_blocked_category_hint() -> None:
-    """blocked 分类要给**原因**而不是一句"失败"。
+def test_cli_non_ready_category_gives_reason() -> None:
+    """非 ready 分类要给**原因**而不是一句"失败"。
+
+    不写死具体分类（本轮 fundamental 从 blocked 变 ready，写死的断言当场失效，
+    而它想守的东西其实没变）—— 改为遍历当前所有非 ready 分类。
 
     ⚠️ 这里断言的是 `_resolve_targets` 抛出的消息，而不是 CLI 的 stdout：
        loguru 的 handler 在 pytest 里会与 capsys 打架（"I/O operation on closed file"），
@@ -742,13 +761,18 @@ def test_cli_blocked_category_hint() -> None:
     """
     from factors import calc
 
-    args = calc.build_parser().parse_args(["--category", "fundamental"])
-    with pytest.raises(AppError) as ei:
-        calc._resolve_targets(args)
-    msg = ei.value.message
-    assert "不能计算" in msg
-    assert "blocked" in msg, "要把状态写出来"
-    assert "数据源" in msg, "blocked 分类必须写明原因（本地没有财务/估值数据）"
+    non_ready = [c for c in loader.categories() if not c.available]
+    assert non_ready, "至少要有一个非 ready 分类，否则这个用例什么都没验证"
+
+    for cat in non_ready:
+        args = calc.build_parser().parse_args(["--category", cat.key])
+        with pytest.raises(AppError) as ei:
+            calc._resolve_targets(args)
+        msg = ei.value.message
+        assert "不能计算" in msg
+        assert cat.status in msg, "要把状态写出来"
+        reason = (cat.note or cat.desc).strip().splitlines()[0].strip()
+        assert reason[:12] in msg, "原因必须真的带进报错里"
 
 
 def _defn(impl: str, params: dict | None = None) -> loader.FactorDef:

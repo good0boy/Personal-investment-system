@@ -475,10 +475,21 @@ def smoke_test(defn: FactorDef) -> str | None:
         return err
 
     q = smoke_frame()
+
+    # 钩子查找必须**容错**：找不到模块、模块里没这个属性、甚至模块名是假的
+    # （测试会 monkeypatch `resolve_impl` 返回一个假函数），都只是"没有钩子"，
+    # 绝不能因此跳过下面的契约校验 —— 否则"实现返回长度不对"这类真问题
+    # 会被一个 ImportError 顶掉，报出一个与真实原因无关的错。
+    maker = None
     try:
         module = importlib.import_module(defn.impl_module)
-        maker = getattr(module, "synthetic_data", None)
-        with (maker() if callable(maker) else nullcontext()):
+        candidate = getattr(module, "synthetic_data", None)
+        maker = candidate if callable(candidate) else None
+    except Exception:
+        maker = None
+
+    try:
+        with (maker() if maker is not None else nullcontext()):
             out = fn(q, **defn.params)
     except Exception as exc:
         return f"调用失败（{type(exc).__name__}）：{exc}"

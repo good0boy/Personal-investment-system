@@ -2,16 +2,17 @@
 
 单机自用的 A 股投资研究系统。本地开发运行，迭代完善后再部署到内网服务器。
 
-**当前进度：阶段 0~5 全部完成** ✅（648 项测试全绿）
+**当前进度：阶段 0~5 全部完成，P0/P1 优化项已落地** ✅（700 项测试全绿）
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 阶段 0 | 底座：脚手架、配置、数据源抽象层、存储层、交易日历、股票池、调度、前端骨架 | ✅ 已完成 |
 | 阶段 1 | 模块 1 · 数据分类（接口目录 + 在线试跑） | ✅ 已完成 |
 | 阶段 2 | 模块 3 · 策略回测（含参数寻优） | ✅ 已完成 |
-| 阶段 3 | 模块 2 · 因子库 | ✅ 已完成 |
+| 阶段 3 | 模块 2 · 因子库（**4 类 / 19 个因子**：日度 11 · 合成 2 · 基本面 6） | ✅ 已完成 |
 | 阶段 4 | 模块 4 · 模拟仿真 | ✅ 已完成 |
 | 阶段 5 | 模块 5 · 用户提醒（企业微信） | ✅ 已完成 |
+| 优化项 | 换机迁移加固 · 基本面因子启用 · 因子合成 · 股票池快照与基准对齐 · 补跑不阻塞端口 · 限流熔断可见 | ✅ 已完成 |
 
 > 🔴 **重要结论：v1.2 策略被证实无效；v1.3 剔除了极端组，止住了灾难性亏损但**仍无正 alpha**。**
 >
@@ -86,14 +87,15 @@
 > 这两个脚本都会先做**前置检查**：找不到 Python、解释器缺依赖、`node_modules` 缺失，
 > 都会在启动前给出可执行的修复提示，而不是让窗口一闪而过。
 >
-> ⚠️ **启动后别急着刷新页面 —— 后端可能在补跑历史交易日。** 本地维护要漏跑，
-> 所以后端启动时会扫 `nav.parquet` 最后日期到今天之间的缺失交易日并**逐个补跑**
-> （日志会打印 `[paper_daily] 检测到 N 个缺失交易日 … 开始补跑`）。
-> 补跑期间**端口还没开始监听**，浏览器会报"拒绝连接" —— 这是正常的，不是服务没起来。
-> 实测一次增量回补约 **30~90 分钟**（取决于缺失天数和网速），补完才会打印
-> `启动完成` / `Application startup complete`。
-> 想确认它在干活：看那个窗口的日志有没有持续输出；想跳过补跑先看界面，
-> 可以先用 `start-dev.bat` 里的前端窗口（Vite 不依赖后端启动完成）。
+> ✅ **启动后端口立刻可用**（2026-09-22 起）。启动补跑跑在**后台线程**里，
+> 不再挡住 uvicorn 监听 —— 实测 **0.1 秒**内 `/api/health` 就能响应。
+> 补跑本身照跑（本地阶段关机必漏跑，这是刚需），日志会打印
+> `[paper_daily] 检测到 N 个缺失交易日 … 开始补跑`，一次增量回补约 **30~90 分钟**。
+> **补跑期间的进度**可以在前端「系统状态」页看到（会显示"启动补跑进行中"横幅），
+> 也可以直接打 `GET /api/v1/system/jobs` 看 `scheduler.catch_up`。
+>
+> ⚠️ 补跑期间**数据可能不完整**（行情还在往回补），所以各页面的指标会随后变全 ——
+> 这不是算错了。想看"稳定态"，等日志出现 `启动补跑结束`。
 >
 > ⚠️ **服务模式要单端口跑整站，需先 `npm run build`** 生成 `frontend\dist`
 > （`start-service.bat` 会自动置 `SERVE_FRONTEND=1`；没有 dist 时后端只打一条警告，只提供 API）。
@@ -200,13 +202,25 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000      # 服务模式（无 relo
 python -m strategies.run --strategy momentum           # 跑一次回测
 python -m strategies.sweep --strategy momentum         # 参数寻优
 
+# ---------- 因子库（CLI only）—— 4 个分类 / 19 个因子 ----------
+python -m factors.calc --list                          # 列注册表 + 已有产物
+python -m factors.calc --check                         # 自检（导入/签名/冒烟）
+python -m factors.calc --category fundamental          # 基本面因子（6 个，按公告日对齐）
+python -m factors.calc --category combo                # 合成因子（2 个；组件须同区间）
+python -m factors.analyze --category fundamental       # 分层回测 + RankIC
+
+# ---------- 股票池快照 + 等权基准（口径与回测内股票池对齐）----------
+python -m tools.backfill_universe                      # 逐日快照 → data/raw/universe/
+python -m tools.backfill_universe --status             # 只看进度
+python -m tools.benchmark_ew                           # 基准对照报告（含口径差）
+
 # ---------- 前端（cd frontend）----------
 npm run dev          # 开发服务器
 npm run type-check   # 类型检查
 npm run build        # 生产构建
 
 # ---------- 测试与静态检查（cd backend）----------
-python -m pytest -q                                  # 全量测试（648 项）
+python -m pytest -q                                  # 全量测试（700 项）
 python -m pytest -m network                          # 真实发送用例（默认 skip）
 python -m ruff check app/ tests/                     # 静态检查
 
@@ -372,10 +386,13 @@ df = pd.read_parquet("data/raw/quote_daily/sh.600519.parquet")
 `.venv` 和 `node_modules` 属于机器相关产物，重新生成即可。
 
 **Q: 服务起来了，但浏览器打开 `127.0.0.1:8000` 报「拒绝连接」**
-九成是**启动补跑还没跑完** —— 补跑期间 uvicorn 还没开始监听端口。
-看后端窗口的日志：出现 `[paper_daily] 检测到 N 个缺失交易日 … 开始补跑` 就说明它在干活
-（增量回补约 30~90 分钟），跑完会打印 `启动完成 / Application startup complete`，之后立刻可访问。
-想先看界面：用 `start-dev.bat`，前端 Vite 窗口的 `127.0.0.1:5173` 不依赖后端补跑完成。
+先确认三件事：① 后端那个窗口有没有报错（最可能是没跑 `setup.bat`，见上一题）；
+② 端口是不是被别的程序占了（`netstat -ano | findstr 8000`）；③ 用的是不是 `start-service.bat`
+（只有它会托管前端 `dist`，`start-dev.bat` 的界面在 `127.0.0.1:5173`）。
+
+> 2026-09-22 之前，**"拒绝连接"最常见的成因是启动补跑还没跑完**（那时补跑同步跑在
+> lifespan 里，30~90 分钟不监听端口）。该问题已修复：补跑改为后台线程，
+> 端口 0.1 秒就绪，补跑进度改由前端「系统状态」页 / `scheduler.catch_up` 展示。
 
 **Q: 启动报「No module named duckdb / akshare」**
 用错了 Python 解释器（裸 `python` 可能指向系统 Python）。用项目虚拟环境：

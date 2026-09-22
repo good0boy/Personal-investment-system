@@ -219,7 +219,7 @@ def _factor_frame(values: list[float]) -> pd.DataFrame:
         [
             {"date": pd.Timestamp(d), "symbol": s, "value": v}
             for d in SAMPLE_DATES
-            for s, v in zip(SYMS3, values)
+            for s, v in zip(SYMS3, values, strict=True)
         ]
     )
 

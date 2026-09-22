@@ -316,7 +316,7 @@ def start_catch_up_background() -> dict[str, Any]:
                 _catch_up_state["result"] = res
             summary = {k: v.get("status") for k, v in (res.get("jobs") or {}).items()}
             logger.info(f"启动补跑结束：{summary}")
-        except Exception as exc:  # noqa: BLE001 - 后台线程绝不能把异常抛出去
+        except Exception as exc:
             logger.exception("启动补跑失败")
             with _catch_up_lock:
                 _catch_up_state["error"] = repr(exc)

@@ -133,7 +133,7 @@ def fundamental_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                     "ZCFZL": base * 4 + i,
                 }
             )
-    for sym, base in (("sh.600519", 10.0), ("sz.000001", 20.0)):
+    for sym in ("sh.600519", "sz.000001"):
         sub = pd.DataFrame([r for r in rows if r["symbol"] == sym])
         data_store.write_parquet(sub, fin / f"{sym}.parquet")
 

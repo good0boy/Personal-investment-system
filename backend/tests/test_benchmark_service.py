@@ -43,7 +43,7 @@ def bench_env(tmp_path, monkeypatch):
         closes = [100.0 * step**i for i in range(len(DATES))]
         # 首日的 preclose 也要让"日收益"等于 step−1（否则首日会是 0%，
         # 累计净值少乘一步 —— 这种差一格的错最容易在断言里被放过）
-        prec = [100.0 / step] + closes[:-1]
+        prec = [100.0 / step, *closes[:-1]]
         df = pd.DataFrame(
             {
                 "date": pd.to_datetime(DATES),

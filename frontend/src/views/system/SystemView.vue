@@ -101,6 +101,74 @@
         <div v-if="probeResult" class="code-block mt-12">{{ probeResult }}</div>
       </div>
 
+      <!-- 限流 / 熔断 -->
+      <div class="panel">
+        <div class="panel-title">
+          <span>限流与熔断</span>
+          <span class="sub">
+            窗口内调用数 / 熔断状态 / 累计等待 —— 数据源被限频时先看这里
+          </span>
+        </div>
+
+        <el-alert
+          v-if="anyBreakerOpen"
+          type="error"
+          :closable="false"
+          show-icon
+          class="mb-12"
+          title="有数据源正被熔断"
+          :description="breakerAlertText"
+        />
+
+        <el-table :data="throttleRows" size="small" border>
+          <el-table-column prop="name" label="数据源" width="100" />
+          <el-table-column label="熔断" width="110">
+            <template #default="{ row }">
+              <el-tag
+                :type="row.open ? 'danger' : row.softStrikes > 0 ? 'warning' : 'success'"
+                size="small"
+                effect="plain"
+              >
+                {{ row.open ? `熔断中 ${row.remaining}s` : row.softStrikes > 0 ? `预警 ${row.softStrikes}/${row.softThreshold}` : '正常' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="窗口内调用" width="130">
+            <template #default="{ row }">
+              <span class="mono">{{ row.callsInWindow }}<span class="sub">
+                / {{ row.maxPerMinute > 0 ? row.maxPerMinute + ' 次每分' : '不限次' }}</span></span>
+            </template>
+          </el-table-column>
+          <el-table-column label="最小间隔" width="100">
+            <template #default="{ row }">
+              <span class="mono">{{ row.minInterval !== null ? row.minInterval + ' s' : '-' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="累计调用" width="100">
+            <template #default="{ row }"><span class="mono">{{ row.totalCalls }}</span></template>
+          </el-table-column>
+          <el-table-column label="累计等待" width="110">
+            <template #default="{ row }">
+              <span class="mono">{{ row.totalWait !== null ? row.totalWait + ' s' : '-' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="历史熔断次数" width="120">
+            <template #default="{ row }"><span class="mono">{{ row.tripCount }}</span></template>
+          </el-table-column>
+          <el-table-column label="最近一次原因" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="text-small">{{ row.reason || (row.lastTripAt || '-') }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <p class="hint mt-8">
+          「累计调用 / 累计等待」是从**进程启动**起算的。等待时长变大说明正在被限频；
+          「预警 n/m」是连续 soft 失败计数（连接被掐断等），达到 m 次才熔断 ——
+          这是为了不被单次网络抖动误伤（见 backend/app/services/data_source/throttle.py）。
+        </p>
+      </div>
+
       <!-- 交易日历 + 存储 -->
       <el-row :gutter="16">
         <el-col :xs="24" :md="12">
@@ -234,6 +302,16 @@
                 </template>
               </el-table-column>
             </el-table>
+
+            <el-alert
+              v-if="jobs?.scheduler?.catch_up?.running"
+              type="warning"
+              :closable="false"
+              show-icon
+              class="mb-12"
+              title="启动补跑进行中（后台线程）"
+              :description="catchUpDesc"
+            />
 
             <p class="text-muted text-small mt-8">
               本地阶段关机就会漏跑，启动时自动补跑已就位（catch_up_on_startup =
@@ -436,6 +514,68 @@ const matrixTable = computed(() => {
     for (const s of sources) row[s.name] = s.capabilities[k]
     return row
   })
+})
+
+// ------------------------------------------------------------------
+// 限流 / 熔断（P1-3）
+// ------------------------------------------------------------------
+// ★ 后端一直在 payload 里塞 `throttle`，但响应模型没声明该字段 → 被 Pydantic
+//   静默丢掉，所以这块 UI 以前根本拿不到数据。后端补了 schema 之后这里才成立。
+interface ThrottleRow {
+  name: string
+  open: boolean
+  remaining: number
+  softStrikes: number
+  softThreshold: number
+  callsInWindow: number
+  maxPerMinute: number | null
+  minInterval: number | null
+  totalCalls: number
+  totalWait: number | null
+  tripCount: number
+  reason: string
+  lastTripAt: string | null
+}
+
+const throttleRows = computed<ThrottleRow[]>(() =>
+  (health.value?.datasources ?? []).map((d) => {
+    const t = d.throttle
+    const rl = t?.rate_limiter
+    const cb = t?.circuit_breaker
+    return {
+      name: d.name,
+      open: cb?.open ?? false,
+      remaining: cb?.remaining_seconds ?? 0,
+      softStrikes: cb?.soft_strikes ?? 0,
+      softThreshold: cb?.soft_threshold ?? 0,
+      callsInWindow: rl?.calls_in_window ?? 0,
+      maxPerMinute: rl?.max_calls_per_minute ?? null,
+      minInterval: rl?.min_interval ?? null,
+      totalCalls: rl?.total_calls ?? 0,
+      totalWait: rl?.total_wait_seconds ?? null,
+      tripCount: cb?.trip_count ?? 0,
+      reason: cb?.reason ?? '',
+      lastTripAt: cb?.last_trip_at ?? null,
+    }
+  }),
+)
+
+const anyBreakerOpen = computed(() => throttleRows.value.some((r) => r.open))
+
+const breakerAlertText = computed(() => {
+  const hit = throttleRows.value.filter((r) => r.open)
+  return (
+    hit.map((r) => `${r.name}（剩余 ${r.remaining}s，原因：${r.reason || '未记录'}）`).join('；') +
+    ' —— 熔断期间**一个请求都不会发出去**，接口试跑会直接失败，稍等会自动恢复。'
+  )
+})
+
+/** 启动补跑进行中的说明文案（把"要等多久、能不能用"直接讲清楚）。 */
+const catchUpDesc = computed(() => {
+  const st = jobs.value?.scheduler?.catch_up
+  if (!st?.running) return ''
+  const started = st.started_at ? `自 ${st.started_at.replace('T', ' ')} 起` : ''
+  return `${started}正在补齐缺失交易日（增量回补全市场行情，通常 30~90 分钟）。服务本身已可用，页面数据会随补跑推进而变全。`
 })
 
 function sectionLabel(key: string) {

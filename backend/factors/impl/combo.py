@@ -168,7 +168,7 @@ def rank_combo(
     matrix = _rank_matrix(q, tuple(names))
     total = np.zeros(len(q), dtype="float64")
     covered = np.zeros(len(q), dtype="float64")
-    for i, (s, w) in enumerate(zip(sg, wt)):
+    for i, (s, w) in enumerate(zip(sg, wt, strict=True)):
         vals = matrix[i] * float(s)
         # 只有所有组件都有值的行才算"覆盖"；缺一个就整行 NaN（见 docstring 的理由）
         ok = ~np.isnan(matrix[i])
@@ -184,7 +184,7 @@ def clear_caches() -> None:
     _RANK_CACHE.clear()
 
 
-class synthetic_data:  # noqa: N801 - 按约定名暴露给 loader，与 fundamental.py 同一约定
+class synthetic_data:
     """临时让合成走一份合成秩矩阵（**只给自检用**）。
 
     与 `factors/impl/fundamental.py` 的同名钩子同一约定：任何"依赖外部落盘产物"
@@ -192,7 +192,7 @@ class synthetic_data:  # noqa: N801 - 按约定名暴露给 loader，与 fundame
     **没有**按分类硬编码的分支。
     """
 
-    def __enter__(self) -> "synthetic_data":
+    def __enter__(self) -> synthetic_data:
         global _SYNTHETIC
         self._previous = _SYNTHETIC
         _SYNTHETIC = True

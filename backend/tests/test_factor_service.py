@@ -377,11 +377,21 @@ def test_list_factors_unknown_category_raises() -> None:
         factor_service.list_factors(category="nope")
 
 
-def test_list_factors_blocked_category_exposes_note(factor_env) -> None:
-    """fundamental 分类必须带着 note 返回 —— 否则用户以为系统漏了一类。"""
+def test_list_factors_non_ready_category_exposes_note(factor_env) -> None:
+    """非 ready 分类必须带着 note 返回 —— 否则用户以为系统漏了一类。
+
+    不写死分类：本轮 fundamental 由 blocked 变 ready，写死的断言当场失效，
+    而它要守的东西（"不能算的分类要说清为什么"）没变。改为遍历所有非 ready 分类。
+    """
     cats = {c["key"]: c for c in factor_service.list_factors()["categories"]}
-    assert cats["fundamental"]["status"] == "blocked"
-    assert cats["fundamental"]["note"]
+    non_ready = {k: c for k, c in cats.items() if not c["available"]}
+    assert non_ready, "至少要有一个非 ready 分类，否则这个用例什么都没验证"
+    for key, c in non_ready.items():
+        assert c["note"].strip(), f"{key}（{c['status']}）必须带原因"
+
+    # 本轮的状态与实现一致性
+    assert cats["fundamental"]["available"], "基本面分类已启用"
+    assert cats["combo"]["available"], "合成因子分类已启用"
     assert cats["minute"]["status"] == "planned"
 
 

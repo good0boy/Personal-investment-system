@@ -45,12 +45,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.core.errors import AppError  # noqa: E402
-from app.core.logging import logger, setup_logging  # noqa: E402
-from app.core.paths import UNIVERSE_DIR, relative_to_project  # noqa: E402
-from app.services import data_store  # noqa: E402
-from app.services.calendar_service import calendar  # noqa: E402
-from tools.universe import build_universe  # noqa: E402
+from app.core.errors import AppError
+from app.core.logging import logger, setup_logging
+from app.core.paths import UNIVERSE_DIR, relative_to_project
+from app.services import data_store
+from app.services.calendar_service import calendar
+from tools.universe import build_universe
 
 
 def existing_days() -> set[str]:
@@ -231,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                         day, res.symbols, meta={"kept": len(res.symbols), "empty": False}
                     )
                     ok += 1
-        except Exception as exc:  # noqa: BLE001 - 单日失败不中断整批
+        except Exception as exc:
             failed.append((day, f"{type(exc).__name__}: {exc}"))
             logger.warning(f"{day} 股票池构建失败：{exc}")
 

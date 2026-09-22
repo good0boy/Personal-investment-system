@@ -28,11 +28,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.core.config import settings  # noqa: E402
-from app.core.errors import AppError  # noqa: E402
-from app.core.logging import logger, setup_logging  # noqa: E402
-from app.core.paths import DATA_DIR, relative_to_project  # noqa: E402
-from app.services import benchmark_service, data_store  # noqa: E402
+from app.core.config import settings
+from app.core.errors import AppError
+from app.core.logging import logger, setup_logging
+from app.core.paths import DATA_DIR, relative_to_project
+from app.services import benchmark_service, data_store
 
 REPORT_PATH = DATA_DIR / "_benchmark_ew_report.txt"
 
@@ -72,7 +72,10 @@ def main(argv: list[str] | None = None) -> int:
     lines.append("  全市场等权基准对照报告")
     lines.append("=" * 92)
     lines.append(f"  生成时间：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append(f"  股票池快照：{len(days)} 天" + (f"（{days[0]} ~ {days[-1]}）" if days else "（**空**，请先 python -m tools.backfill_universe）"))
+    snapshot_desc = (
+        f"（{days[0]} ~ {days[-1]}）" if days else "（**空**，请先 python -m tools.backfill_universe）"
+    )
+    lines.append(f"  股票池快照：{len(days)} 天{snapshot_desc}")
     lines.append("")
     lines.append("  口径说明：")
     lines.append("    · 对齐口径  = 只持有当日股票池快照内的标的（与回测内股票池一致）")

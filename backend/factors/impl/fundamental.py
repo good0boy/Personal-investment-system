@@ -31,7 +31,6 @@ import numpy as np
 import pandas as pd
 
 from app.core.errors import AppError
-from app.core.logging import logger
 from app.services import data_store
 
 #: 默认数据集（财务指标：ROE / 毛利率 / 资产负债率 / 同比增速都在这里）
@@ -152,11 +151,11 @@ def _asof_positions(q: pd.DataFrame, dataset: str, fields: tuple[str, ...]) -> n
     p_dt = panel["notice_date"].to_numpy().astype("datetime64[ns]")
     p_codes, p_uniq = pd.factorize(p_sym, sort=False)
     p_starts, p_ends = _group_bounds(p_codes)
-    p_index = {u: (int(s), int(e)) for u, s, e in zip(p_uniq, p_starts, p_ends)}
+    p_index = {u: (int(s), int(e)) for u, s, e in zip(p_uniq, p_starts, p_ends, strict=True)}
 
     positions = np.full(len(q), np.nan, dtype="float64")
     q_starts, q_ends = _group_bounds(q_codes)
-    for u, s, e in zip(q_uniq, q_starts, q_ends):
+    for u, s, e in zip(q_uniq, q_starts, q_ends, strict=True):
         rng = p_index.get(u)
         if rng is None:
             continue  # 该标的没有财务数据 → 整段保持 NaN
@@ -251,7 +250,7 @@ def _build_synthetic_panel() -> pd.DataFrame:
     return panel
 
 
-class synthetic_data:  # noqa: N801 - 按约定名暴露给 loader，故意用"上下文管理器类"形式
+class synthetic_data:
     """临时把数据读取替换成合成面板（**只给自检用**）。
 
     ⚠️ 为什么需要它：`loader.smoke_test()` 是"能不能 import / 签名对不对 /
@@ -261,7 +260,7 @@ class synthetic_data:  # noqa: N801 - 按约定名暴露给 loader，故意用"�
     本文件之外没有任何地方使用它。
     """
 
-    def __enter__(self) -> "synthetic_data":
+    def __enter__(self) -> synthetic_data:
         global _OVERRIDE
         self._previous = _OVERRIDE
         _OVERRIDE = _build_synthetic_panel()
