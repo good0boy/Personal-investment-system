@@ -10,7 +10,13 @@
  *     需要验证"自检标红"链路时用 /docs 或 curl 手动调即可，不必占用前端代码。
  */
 import { http } from './client'
-import type { CatalogItemsResp, TryRequest, TryResult } from '@/types/api'
+import type {
+  CatalogItemsResp,
+  LocalDatasetsResp,
+  LocalSample,
+  TryRequest,
+  TryResult,
+} from '@/types/api'
 
 /** 全部接口定义（含自检状态）—— 首屏一次拉全，本地过滤 */
 export const getCatalogItems = (category?: string) => {
@@ -27,3 +33,14 @@ export const runCatalogCheck = (liveSample = 0) =>
   http.post<Record<string, unknown>>('/api/v1/catalog/check', undefined, {
     live_sample: liveSample,
   })
+
+/** 本地已落盘的数据维度清单。首次约 12 秒（要读 2.5 万个 parquet 的文件尾），后端缓存 10 分钟 */
+export const getLocalDatasets = (refresh = false) =>
+  http.get<LocalDatasetsResp>(
+    '/api/v1/catalog/local/datasets',
+    refresh ? { refresh: true } : undefined,
+  )
+
+/** 某个维度的示例数据（真读真表，默认 20 行） */
+export const getLocalSample = (key: string, limit = 20) =>
+  http.get<LocalSample>(`/api/v1/catalog/local/datasets/${key}/sample`, { limit })

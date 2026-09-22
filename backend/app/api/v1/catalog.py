@@ -1,4 +1,4 @@
-﻿"""模块 1 · 数据分类的接口：目录浏览 + 在线试跑 + 自检。
+﻿"""模块 1 · 数据分类的接口：目录浏览 + 在线试跑 + 自检 + 本地数据清单。
 
 设计要点
 --------
@@ -6,6 +6,8 @@
 - `/try` 是全系统唯一"任意参数 + 真实网络"的入口，安全闸门在
   `catalog_service.try_run`（白名单 / 类型与格式校验 / 限流 / 截断 / 缓存）。
 - 试跑可能较慢（真实网络 + akshare 1 秒限流），前端要显示 loading。
+- `/local/*` 走的是另一条路：**不联网**，只读本地已落盘的数据
+  （真相在磁盘，见 `local_data_service` 的模块说明）。
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.core.logging import logger
 from app.schemas.common import ApiResponse
-from app.services import catalog_service
+from app.services import catalog_service, local_data_service
 
 router = APIRouter(tags=["catalog"])
 
@@ -61,6 +63,38 @@ def catalog_items(
 @router.get("/check/status", summary="自检状态汇总")
 def catalog_check_status() -> ApiResponse[dict[str, Any]]:
     return ApiResponse.ok(catalog_service.check_summary())
+
+
+# ======================================================================
+# 本地数据（磁盘上已经落盘的数据清单）
+#
+# ⚠️ 路由顺序有讲究：这几条都在 `/{item_id}` **之前**注册。
+#    `/local/datasets` 是两个路径段、`/{item_id}` 是一个，本身不会撞；
+#    但万一以后有人把 /local 收成单段，先注册的仍会优先匹配 —— 不至于
+#    静默把 `/local` 当成某个接口 ID 去查。
+# ======================================================================
+@router.get("/local/datasets", summary="本地已落盘的数据维度清单（规模 + 示例取法）")
+def catalog_local_datasets(
+    refresh: bool = Query(False, description="强制重扫（默认走 10 分钟缓存；重扫约 12 秒）"),
+) -> ApiResponse[dict[str, Any]]:
+    """本地数据清单：以**磁盘**为唯一真相。
+
+    首次约 12 秒 —— 要读约 2.5 万个 parquet 的文件尾才能拿到行数与覆盖区间，
+    之后走进程内缓存。`refresh=true` 用于"刚跑完回补，想确认落盘没有"。
+    """
+    return ApiResponse.ok(local_data_service.datasets(refresh=refresh))
+
+
+@router.get("/local/datasets/{key}/sample", summary="某个数据维度的示例数据（真读真表）")
+def catalog_local_sample(
+    key: str,
+    limit: int = Query(20, ge=1, le=100, description="取多少行（默认 20）"),
+) -> ApiResponse[dict[str, Any]]:
+    """取某个维度最近 N 行的真实数据。
+
+    行数、列数都可能被裁（宽表 151 列铺出来没法看），裁剪情况在 `note` 里写明。
+    """
+    return ApiResponse.ok(local_data_service.sample(key, limit))
 
 
 @router.get("/{item_id}", summary="单个接口完整定义")

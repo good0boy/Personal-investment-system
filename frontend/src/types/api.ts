@@ -1092,3 +1092,103 @@ export interface AlertMeta {
   exit_reasons: AlertEnumItem[]
   channel: string
 }
+
+// ======================================================================
+// 模块 1 · 本地数据（磁盘上已经落盘的数据维度）
+//
+// 与上面的接口目录是**两个问题**：接口目录回答"数据源能调什么"，
+// 这里回答"本地已经存了什么"。真相是磁盘，不是任何登记表。
+// ======================================================================
+/** 数据来源：原始下载 / 本地派生 / 本地状态 */
+export type LocalOrigin = 'downloaded' | 'derived' | 'state'
+
+/** 维度上的一条补充信息（键值对） */
+export interface LocalDimensionExtra {
+  label: string
+  value: string
+}
+
+/** 一个本地数据维度 */
+export interface LocalDimension {
+  key: string
+  name: string
+  group: string
+  origin: LocalOrigin
+  origin_label: string
+  desc: string
+  /** 一行代表什么 —— 看数字前先看单位 */
+  grain: string
+  /** 谁把它落盘的（工具 / 服务） */
+  producer: string
+  path: string
+  /** 覆盖区间的口径名（如"覆盖（报告期）"） */
+  date_label: string
+  /** 行数口径说明：行数与文件数不同源时必须写清楚（如"仅净值表"） */
+  rows_scope: string
+  extras: LocalDimensionExtra[]
+  available: boolean
+  files: number
+  bytes: number
+  human: string
+  rows: number
+  date_start: string | null
+  date_end: string | null
+  factor_count: number
+  factor_names: Array<{ name: string; cname: string }>
+  /** 不可用时的原因（本地没有 / 回补失败 / 读取出错） */
+  error: string | null
+}
+
+/** 维度分组 */
+export interface LocalGroup {
+  key: string
+  label: string
+  desc: string
+}
+
+/** 本地数据清单（GET /catalog/local/datasets） */
+export interface LocalDatasetsResp {
+  groups: LocalGroup[]
+  origins: Record<string, string>
+  datasets: LocalDimension[]
+  summary: {
+    total: number
+    available: number
+    missing: number
+    files: number
+    bytes: number
+    human: string
+    rows: number
+    rows_human: string
+    data_root: string
+  }
+  /** 本次扫描耗时（首次约 12 秒，之后走缓存） */
+  elapsed_ms: number
+  scanned_at: string
+  ttl_seconds: number
+}
+
+/** 某个维度的示例数据（GET /catalog/local/datasets/{key}/sample） */
+export interface LocalSample {
+  key: string
+  dataset: string
+  grain: string
+  columns: Array<{ name: string; dtype: string }>
+  /** 字符串二维数组 —— 前端用列下标当 prop */
+  rows: string[][]
+  shown_rows: number
+  shown_columns: number
+  total_rows: number
+  /** 裁剪说明（列被裁 / 示例只是一个切片） */
+  note: string
+  source: {
+    kind: string
+    file: string
+    caption: string
+    table: string
+    /** 示例取自哪只标的（有则前端明确标出来，避免"这是谁的数"靠猜） */
+    symbol?: string
+  }
+  /** 仅 SQLite 维度有：库里的表清单 */
+  tables?: Array<{ name: string; rows: number }>
+}

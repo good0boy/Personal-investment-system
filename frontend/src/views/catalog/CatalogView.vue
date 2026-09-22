@@ -272,6 +272,19 @@
         </div>
       </el-tab-pane>
 
+      <!-- 本地数据：磁盘上已经落盘的数据维度（与"接口能调什么"是两个问题）
+           lazy：这一页一挂载就要扫 2.5 万个 parquet（~12s）。不 lazy 的话，
+           每次打开"数据分类"都会触发一次真实磁盘扫描 —— 只看接口目录的人白等。 -->
+      <el-tab-pane name="local" lazy>
+        <template #label>
+          <span class="tab-label">
+            <el-icon class="tab-icon"><component :is="'FolderOpened'" /></el-icon>
+            本地数据
+          </span>
+        </template>
+        <LocalDataPanel />
+      </el-tab-pane>
+
       <!-- 数据源能力矩阵 -->
       <el-tab-pane name="matrix">
         <template #label>
@@ -298,6 +311,7 @@ import type {
   TryResult,
 } from '@/types/api'
 import CapabilityMatrix from './CapabilityMatrix.vue'
+import LocalDataPanel from './LocalDataPanel.vue'
 
 const activeTab = ref('fundamental')
 const loading = ref(true)
