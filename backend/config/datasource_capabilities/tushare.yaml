@@ -1,0 +1,131 @@
+# ============================================================
+# 数据源能力声明 —— Tushare Pro
+# 模块 1「数据源能力矩阵」页面的数据来源。
+#
+# ⚠️⚠️ 本文件【未在本环境实测】⚠️⚠️
+#   以下支持情况依据 Tushare 官方文档与公开资料整理（2026-09 核对），
+#   积分门槛会随官方政策调整。**接入前必须自行注册并逐项验证。**
+#   页面会把 verified=false 的数据源整列标灰，以示区别于实测结论。
+# ============================================================
+
+name: "tushare"
+display_name: "Tushare Pro"
+role: "备选（按积分开放）"
+package: "tushare"
+version_pin: ""
+homepage: "https://tushare.pro/"
+license: "需注册。基础接口约 120 积分可用；分钟线/停复牌/资金流等需 2000~5000 积分（可通过邀请与贡献获取）"
+
+# ★ 实测标记：true = 本环境真实调用验证过；false = 依据文档整理，未验证
+verified: false
+verified_at: null
+verified_by: null
+verified_note: "未实测。积分门槛是最大的不确定性 —— 同一个接口名在不同积分等级下可能直接报错。"
+
+symbol_format: "600519.SH | 000001.SZ"
+symbol_note: "交易所后缀大写。与 baostock 的 sh.600519 前缀式相反，需转换。"
+
+auth:
+  required: true
+  note: "需在 tushare.pro 注册并把 token 配置到 ts.set_token()。token 属密钥，应放 .env 而非本文件。"
+
+capabilities:
+  # ---------- 行情 ----------
+  daily_kline:
+    supported: true
+    quality: "excellent"
+    note: "daily / pro_bar，adj='hfq' 可直接取后复权"
+    priority: "备选"
+  minute_kline:
+    supported: true
+    quality: "good"
+    note: "stk_mins，⚠️ 需高积分（约 5000）"
+    priority: "备选"
+  adjust_factor:
+    supported: true
+    quality: "excellent"
+    note: "adj_factor 接口，可自算任意口径复权"
+    priority: "备选"
+  realtime_quote:
+    supported: true
+    quality: "fair"
+    note: "realtime_quote / realtime_tick，⚠️ 需积分，且非官方实时源"
+    priority: "备选"
+  index_daily:
+    supported: true
+    quality: "excellent"
+    note: "index_daily；另有 index_dailybasic 估值数据"
+    priority: "备选"
+
+  # ---------- 合规与风控 ----------
+  daily_st_status:
+    supported: true
+    quality: "fair"
+    note: "namechange 接口可查曾用名变更历史（含 ST/*ST），需自行按日期区间重建逐日状态；不是直接的布尔字段"
+    priority: "备选"
+  halt_status:
+    supported: true
+    quality: "good"
+    note: "suspend_d 停复牌信息，⚠️ 需积分"
+    priority: "备选"
+  delisted_history:
+    supported: true
+    quality: "good"
+    note: "stock_basic 带 list_status='D' 与 delist_date；退市前行情取自 daily（需确认覆盖度）"
+    priority: "备选"
+
+  # ---------- 股票池与日历 ----------
+  historical_index_cons:
+    supported: true
+    quality: "good"
+    note: "index_weight 按月度给出成分与权重，可回溯历史"
+    priority: "备选"
+  all_stock_list:
+    supported: true
+    quality: "excellent"
+    note: "stock_basic，含上市/退市状态与行业"
+    priority: "备选"
+  trade_calendar:
+    supported: true
+    quality: "excellent"
+    note: "trade_cal，含 is_open 标记"
+    priority: "备选"
+
+  # ---------- 基本面 ----------
+  fundamentals:
+    supported: true
+    quality: "excellent"
+    note: "★ 财务数据是其强项：income / balancesheet / cashflow / fina_indicator / forecast / express，字段规范且文档齐全"
+    priority: "备选"
+  industry_classification:
+    supported: true
+    quality: "good"
+    note: "stock_basic.industry + index_classify（申万）"
+    priority: "备选"
+
+  # ---------- 板块与资金 ----------
+  sector_board:
+    supported: true
+    quality: "fair"
+    note: "ths_index / ths_daily（同花顺板块），⚠️ 需积分"
+    priority: "备选"
+  fund_flow:
+    supported: true
+    quality: "good"
+    note: "moneyflow / moneyflow_hsgt（北向）⚠️ 需积分"
+    priority: "备选"
+  dragon_tiger:
+    supported: true
+    quality: "good"
+    note: "top_list / top_inst"
+    priority: "备选"
+
+stability:
+  interface_change_risk: "low"
+  note: "接口名与字段长期稳定（比 akshare 稳定），但**权限门槛会变**：今天能用的接口明天可能因为积分规则调整而报错。真正的风险不在接口签名，而在权限。"
+
+pitfalls:
+  - "★ 积分制是最大变数：同一份代码在不同账号下行为不同，报错信息也常是权限而非参数问题"
+  - "token 必须走 .env，不要写进本文件或代码"
+  - "symbol 是 600519.SH 后缀式，与 baostock 前缀式相反"
+  - "部分接口是打包下载式（如 daily 按交易日全市场返回），单股查询需自行过滤，与 逐股查询式 的库用法不同"

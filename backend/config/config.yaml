@@ -1,0 +1,162 @@
+# ============================================================
+# 业务配置（可读、可 diff、可版本管理）
+# 密钥类配置一律走 .env，不要写在这里
+# ============================================================
+
+app:
+  name: "A股投资本地服务"
+  version: "0.1.0"
+
+# ---------------- 数据范围 ----------------
+data:
+  # 预热窗口起点：回测从 2020-06-01 开始，需 20 个交易日预热
+  # 2020-01-01 ~ 2020-05-31 共 97 个交易日（已实测），足够
+  start_date: "2020-01-01"
+  # 拉取终点：跟随最新交易日（脚本会覆盖为最近交易日）
+  end_date: "latest"
+  # 复权口径：后复权（回测与信号统一）
+  # 不复权 = ""，前复权 = "qfq"，后复权 = "hfq"
+  adjust: "hfq"
+  frequency: "d"
+
+# ---------------- 回测区间 ----------------
+backtest:
+  # 样本内（调参、定规则、参数寻优）
+  in_sample_start: "2020-06-01"
+  in_sample_end: "2024-12-31"
+  # 样本外（规则冻结后只跑一次，sweep.py 硬编码拒绝此区间）
+  out_sample_start: "2025-01-01"
+  out_sample_end: "2026-09-16"
+
+# ---------------- 股票池（Universe）----------------
+universe:
+  # 板块白名单：沪主板 600/601/603/605，深主板 000/001/002/003，创业板 300/301
+  boards:
+    sh_main: ["600", "601", "603", "605"]
+    sz_main: ["000", "001", "002", "003"]
+    gem: ["300", "301"]
+  # 板块黑名单：科创板 688、北交所 8xx/4xx、B股 900/200
+  exclude_prefixes: ["688", "689", "8", "4", "900", "200"]
+  # ★ 新股入池门槛（交易日）—— 上市满 90 日后才有资格被选中
+  listed_days_min: 90
+  # ★ 卖出后禁买窗口（交易日）—— 与上者是两个独立参数，勿混淆
+  no_rebuy_days: 60
+  # 是否纳入已退市股票（消除幸存者偏差，baostock 支持）
+  include_delisted: true
+  # ★ 退市（数据永久终止）持仓强平确认窗口（交易日）——
+  #   标的无行情且矩阵中已无后续数据，超过该窗口 → 按最后可用收盘价强平。
+  #   缓冲防误判：回测终点前 1~2 天恰好缺数据的正常标的不会被当成退市。
+  delist_confirm_days: 3
+
+# ---------------- 交易成本（唯一实现见 services/cost_model.py）----------------
+cost:
+  commission_rate: 0.00025      # 佣金 万2.5
+  commission_min: 5.0           # 最低 5 元
+  transfer_fee_rate: 0.00001    # 过户费 0.001%
+  slippage_bp: 5.0              # 滑点 5 个基点
+  stamp_tax:
+    # 印花税卖出单边，2023-08-28 减半 —— 必须分段
+    - { from_date: "2020-01-01", to_date: "2023-08-25", rate: 0.001 }
+    - { from_date: "2023-08-28", to_date: "2099-12-31", rate: 0.0005 }
+  lot_size: 100                 # 整手 100 股
+
+# ---------------- 策略默认参数（详见 策略规格说明书.md v1.1）----------------
+strategy_defaults:
+  init_cash: 1000000
+  max_positions: 5
+  max_weight_per_stock: 0.20    # 按当前总资产
+  keep_cash: true               # 不足 5 只时留现金
+  hold_days_max: 10             # 满 10 个交易日强制卖出
+  take_profit_net: 0.10         # 扣成本后净浮盈 > 10% 止盈
+  index_panic_pct: -0.015       # 上证指数当日收盘跌幅阈值
+  use_stop_loss: false          # 已确认不加个股止损
+  timing:
+    index_code: "sh.000001"
+    ret3_min: -0.01             # 近 3 日累计 > -1%
+    today_min: -0.005           # 当日 > -0.5%
+  entry:
+    today_pct_min: 0.01         # 今日涨跌幅 ∈ (1%, 5%)
+    today_pct_max: 0.05
+    ret3_min: 0.05              # 近 3 日累计 > 5%
+    ret10_min: 0.05
+    ret20_min: 0.05
+    amplitude_window: 5         # 排序键：近 5 日平均振幅降序
+  benchmark: "sh.000001"
+  fill_rule: "next_open"        # T 日信号 → T+1 开盘成交
+
+# ---------------- 数据源 ----------------
+datasource:
+  # 行情主源（模块 3/4 只用它）
+  primary: "baostock"
+  # 广度源（模块 1、实时行情、基本面）
+  secondary: "akshare"
+  # 请求节流（秒），避免被限频
+  min_interval: 0.12
+  max_retries: 3
+  timeout: 30
+  # akshare 试跑结果缓存 TTL（秒）
+  try_cache_ttl: 300
+  # ★ akshare 专项节流 —— 比 baostock 更严格
+  #   理由：东财/新浪对高频访问远比 baostock 敏感，且限频时往往直接掐连接（无 429）
+  akshare:
+    min_interval: 1.0            # 1 秒最多 1 次调用
+    max_calls_per_minute: 30     # 60 秒窗口内最多 30 次
+    circuit_break_seconds: 300   # 识别到限频后静默 5 分钟（期间不发任何请求）
+    cache_ttl: 300               # 历史类接口缓存 TTL
+    spot_cache_ttl: 10           # 实时快照缓存 TTL（实时数据不能缓存太久）
+
+# ---------------- 调度 ----------------
+scheduler:
+  enabled: true
+  timezone: "Asia/Shanghai"
+  jobs:
+    # 模拟盘日度跑批：交易日 23:00（主人 2026-09-20 拍板）
+    # 为什么不是 15:35：baostock 日线一般 17:30~19:00 才更新完，
+    # 23:00 回补（约 30 分钟）+ 重算（约 45s）当天 23:35 前后净值就绪。
+    # 数据源若延迟 → 就绪校验拦截记 failed → 次日启动补跑兜底（保底方案）。
+    paper_daily:
+      cron: { hour: 23, minute: 0 }
+      enabled: true
+    # 每日持仓早报：交易日 08:00（主人 2026-09-20 拍板）
+    # 读上一交易日 23:00 跑批的产物（positions + nav），发「今日持仓 + 仓位」。
+    # ⚠️ 数据源是 positions.parquet，**不是** orders.parquet 的"计划单"
+    #    —— 引擎的 T 日挂单不落 orders 流水，orders 里的 pending 全是
+    #    历史僵尸单（详见 alert_service.notify_daily_summary 的 docstring）。
+    # 与 paper_daily 不同：本任务**不判交易日**（读已有产物即可），
+    # 闸门是"产物是否存在"。
+    alert_daily_summary:
+      cron: { hour: 8, minute: 0 }
+      enabled: true
+    # 接口目录自检：每日 09:00（模块 1 已实现）
+    catalog_check:
+      cron: { hour: 9, minute: 0 }
+      enabled: true
+  # 启动时补跑缺失交易日（本地关机会漏跑，这是刚需）
+  catch_up_on_startup: true
+  catch_up_max_days: 30
+
+# ---------------- 模拟盘 ----------------
+paper:
+  default_account_id: "default"
+  default_account_name: "默认模拟账户"
+  init_cash: 1000000
+
+# ---------------- 提醒（企微）----------------
+alert:
+  enabled: true                 # 模块 5 已就位（2026-09-20）。改 false 可一键静默
+  # 群机器人频率上限 20 条/分钟，超限排队而非丢弃
+  rate_limit_per_minute: 20
+  retry_backoff: [1, 5, 30]     # 秒
+  max_retry: 3
+  # ⚠️ 仅用于**校验**：真实模板路径写死在 core/paths.py 的 ALERT_TEMPLATES_FILE
+  #    （本项目头号静默失效就是"配置写了没被读"）。改这里不会生效，
+  #    改模板请直接编辑 backend/config/alert_templates.yaml。
+  templates_file: "config/alert_templates.yaml"
+
+# ---------------- 日志 ----------------
+logging:
+  level: "INFO"
+  dir: "logs"
+  rotation: "10 MB"
+  retention: "30 days"
+  console: true

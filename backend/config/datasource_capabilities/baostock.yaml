@@ -1,0 +1,124 @@
+# ============================================================
+# 数据源能力声明 —— baostock
+# 模块 1「数据源能力矩阵」页面的数据来源。
+# 修改本文件无需改代码；页面会读取并展示。
+# ============================================================
+
+name: "baostock"
+display_name: "baostock"
+role: "行情主源"
+package: "baostock"
+version_pin: "0.9.3"
+version_note: "pip 版本号。注意 baostock.__version__ 返回的是它自己格式化的 '00.9.30'，与 pip 版本不同名，别搞混（实测确认）。requirements.txt 里锁 0.9.3。"
+homepage: "http://baostock.com/"
+license: "免费，无需注册"
+
+# 实测日期 —— 页面上会显示，超过 90 天标黄提醒复测
+verified: true
+verified_at: "2026-09-16"
+verified_by: "旺财（隔离环境实测，baostock 0.9.3）"
+verified_note: null
+
+# 代码格式
+symbol_format: "sh.600519 | sz.000001 | sh.000001（指数）"
+symbol_note: "带交易所前缀，无歧义。本项目内部统一采用此格式。"
+
+# 会话
+auth:
+  required: false
+  note: "bs.login() / bs.logout()，无需凭证"
+
+# 能力矩阵：每项标注支持程度
+capabilities:
+  daily_kline:
+    supported: true
+    quality: "excellent"
+    note: "query_history_k_data_plus，支持后复权(adjustflag=1)"
+    priority: "主用"
+  minute_kline:
+    supported: true
+    quality: "fair"
+    note: "frequency=5/15/30/60，不支持 1 分钟"
+    priority: "备选"
+  adjust_factor:
+    supported: true
+    quality: "excellent"
+    note: "adjustflag=1 后复权 / 2 前复权 / 3 不复权"
+    priority: "主用"
+  realtime_quote:
+    supported: false
+    quality: "none"
+    note: "无实时行情能力"
+    priority: "-"
+  daily_st_status:
+    supported: true
+    quality: "excellent"
+    note: "★ isST 字段逐日时变。实测 sz.000004：2020-01-02 isST=0 → 2022-05-06 变1 → 2023-06-28 变0"
+    priority: "唯一来源"
+  halt_status:
+    supported: true
+    quality: "excellent"
+    note: "★ tradestatus 字段，1=正常交易 / 0=停牌"
+    priority: "唯一来源"
+  delisted_history:
+    supported: true
+    quality: "excellent"
+    note: "★ 退市股历史数据完整到退市日。实测 600069/600074/600086/600090 全部通过"
+    priority: "主用"
+  historical_index_cons:
+    supported: true
+    quality: "excellent"
+    note: "★ query_zz500_stocks('2020-06-01') / query_hs300_stocks(date) 支持历史日期"
+    priority: "唯一来源"
+  all_stock_list:
+    supported: true
+    quality: "good"
+    note: "query_all_stock(day=...) 可按日期查。⚠️ code_name 是当前名称非历史名称"
+    priority: "主用"
+  trade_calendar:
+    supported: true
+    quality: "excellent"
+    note: "query_trade_dates，含 is_trading_day 标记"
+    priority: "主用"
+  index_daily:
+    supported: true
+    quality: "excellent"
+    note: "sh.000001 上证指数等"
+    priority: "主用"
+  fundamentals:
+    supported: true
+    quality: "fair"
+    note: "query_profit_data / query_growth_data 等，字段较 akshare 少"
+    priority: "备选"
+  industry_classification:
+    supported: true
+    quality: "good"
+    note: "query_stock_industry，证监会标准，实测 5553 条"
+    priority: "主用"
+  sector_board:
+    supported: false
+    quality: "none"
+    note: "无板块/概念数据"
+    priority: "-"
+  fund_flow:
+    supported: false
+    quality: "none"
+    note: "无资金流数据"
+    priority: "-"
+  dragon_tiger:
+    supported: false
+    quality: "none"
+    note: "无龙虎榜数据"
+    priority: "-"
+
+# 稳定性评估
+stability:
+  interface_change_risk: "low"
+  note: "接口长期稳定，多年未变。这是相对 akshare 的核心优势。"
+
+# 已知坑
+pitfalls:
+  - "query_all_stock 的 code_name 是【当前名称】而非历史名称（实测 4220 只共同股票名称差异 0 处）→ 不能用于重建历史 ST 状态，必须用日线的 isST 字段"
+  - "模块级全局会话 + 非线程安全，所有调用必须串行（已用全局锁保护）"
+  - "北交所支持有限，本项目股票池已排除北交所，不受影响"
+  - "返回结果中缺失值用空字符串表示，需 replace({'': pd.NA})"

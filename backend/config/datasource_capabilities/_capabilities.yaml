@@ -1,0 +1,128 @@
+# ============================================================
+# 数据源「能力项」清单 —— 元数据，不是数据源
+# 模块 1「数据源能力矩阵」页面用它来渲染表头（中文名）与分组。
+#
+# 文件名以 `_` 开头：/api/v1/datasources 会跳过它，
+# 不会被当成一个数据源列出来。
+#
+# 加一项新能力：这里加定义 + 在每个数据源 YAML 的 capabilities 下补声明。
+# ============================================================
+
+# 分组顺序即页面展示顺序（按"对本项目的重要程度"排，不是按数据类别排）
+#
+# ⚠️ `items` 必须写全 —— 后端 _capability_keys_in_order() 靠它决定能力项顺序。
+#    漏写会让排序**静默退化成字母序**（adjust_factor 而非 daily_kline 排第一），
+#    "关键能力靠前"的人工意图就没了，而且不报错。
+#    新增能力项时：这里补进某个 group 的 items，否则它会排到末尾。
+groups:
+  - key: quote
+    label: 行情数据
+    note: 回测与模拟盘的基础。看的是复权口径与历史长度。
+    items:
+      - daily_kline
+      - minute_kline
+      - adjust_factor
+      - realtime_quote
+      - index_daily
+  - key: compliance
+    label: 合规与风控字段
+    note: ★ 本项目最关键的一组 —— 没有这些字段，ST 判定与停牌处理就只能靠猜。
+    items:
+      - daily_st_status
+      - halt_status
+      - delisted_history
+  - key: universe
+    label: 股票池与日历
+    note: 决定"某一天有哪些股票可交易"。
+    items:
+      - historical_index_cons
+      - all_stock_list
+      - trade_calendar
+  - key: fundamental
+    label: 基本面
+    note: 因子库（模块 2）的输入。
+    items:
+      - fundamentals
+      - industry_classification
+  - key: sentiment
+    label: 板块与资金
+    note: 情绪面辅助数据，可选。
+    items:
+      - sector_board
+      - fund_flow
+      - dragon_tiger
+
+capabilities:
+  # ---------- 行情 ----------
+  daily_kline:
+    label: 历史日线
+    desc: 个股日/周/月 K 线，含开高低收与成交量额
+    critical: true
+  minute_kline:
+    label: 分钟线
+    desc: 1/5/15/30/60 分钟颗粒度
+    critical: false
+  adjust_factor:
+    label: 复权处理
+    desc: 能否直接取到后复权价格，或拿到复权因子自行计算
+    critical: true
+  realtime_quote:
+    label: 实时行情
+    desc: 盘中快照、买卖盘口
+    critical: false
+  index_daily:
+    label: 指数日线
+    desc: 上证/深证/中证系列指数行情
+    critical: true
+
+  # ---------- 合规与风控（本项目红线所在）----------
+  daily_st_status:
+    label: 逐日 ST 状态
+    desc: 按交易日给出该股当日是否 ST，而非只有"当前 ST 名单"
+    critical: true
+  halt_status:
+    label: 停牌标记
+    desc: 逐日给出当日是否停牌，而非靠成交量推断
+    critical: true
+  delisted_history:
+    label: 退市股历史
+    desc: 已退市股票在退市前的完整行情（消除幸存者偏差）
+    critical: true
+
+  # ---------- 股票池与日历 ----------
+  historical_index_cons:
+    label: 历史指数成分股
+    desc: 能按历史日期查询当时的成分股名单
+    critical: true
+  all_stock_list:
+    label: 全量股票列表
+    desc: 某日全部可交易证券清单
+    critical: true
+  trade_calendar:
+    label: 交易日历
+    desc: 交易日 / 非交易日判定
+    critical: true
+
+  # ---------- 基本面 ----------
+  fundamentals:
+    label: 财务报表
+    desc: 三大报表、财务指标、业绩预告等
+    critical: false
+  industry_classification:
+    label: 行业分类
+    desc: 证监会 / 申万 / 东财行业归属
+    critical: false
+
+  # ---------- 板块与资金 ----------
+  sector_board:
+    label: 板块与概念
+    desc: 行业板块、概念板块的列表、成分与行情
+    critical: false
+  fund_flow:
+    label: 资金流向
+    desc: 个股/大盘主力资金流、北向资金
+    critical: false
+  dragon_tiger:
+    label: 龙虎榜
+    desc: 龙虎榜详情、营业部席位数据
+    critical: false

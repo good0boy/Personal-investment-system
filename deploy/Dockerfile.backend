@@ -1,0 +1,39 @@
+# ============================================================
+# 后端镜像
+# 注意：本地开发阶段不用 Docker（热重载/调试都不方便）。
+#      这份配置是为了保证「本地能跑 = 服务器能跑」，上线时直接可用。
+# ============================================================
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TZ=Asia/Shanghai
+
+WORKDIR /app
+
+# 系统依赖：curl 供健康检查；tzdata 保证时区正确
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
+# 先装依赖，利用 layer 缓存
+COPY backend/requirements.txt /app/requirements.txt
+RUN pip install -r /app/requirements.txt
+
+# 再拷代码
+COPY backend /app
+
+# 数据目录由 compose 挂载卷覆盖
+RUN mkdir -p /app/data /app/logs
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/api/health > /dev/null || exit 1
+
+# 容器内必须监听 0.0.0.0，否则宿主机访问不到
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

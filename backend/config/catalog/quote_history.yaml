@@ -1,0 +1,478 @@
+# ============================================================
+# 模块 1 · 接口目录 —— 历史行情
+# ============================================================
+# ★ 回测与模拟盘的数据一律走 baostock（本页收录其 4 个核心方法）；
+#   akshare 的历史接口用于研究参考。两者成交量单位不同：
+#   akshare 单位是「手」，baostock 单位是「股」（akshare_client 已统一换算）。
+
+- id: quote_history.stock_zh_a_hist
+  name: A股历史行情（日/周/月线）
+  sub_category: 个股日线
+  datasource: akshare
+  func_name: stock_zh_a_hist
+  description: 东方财富-个股历史行情，支持日/周/月频与前后复权。研究参考用；回测主数据走 baostock（含 ST/停牌字段）
+  symbol_format: plain
+  params:
+    - { name: symbol, type: str, default: "600519", desc: "股票代码（6 位数字）" }
+    - { name: period, type: str, default: "daily", desc: "周期", options: ["daily", "weekly", "monthly"] }
+    - { name: start_date, type: str, default: "20240101", desc: "开始日期（YYYYMMDD）" }
+    - { name: end_date, type: str, default: "20240131", desc: "结束日期（YYYYMMDD）" }
+    - { name: adjust, type: str, required: false, default: "hfq", desc: "复权（qfq 前复权 / hfq 后复权 / 空=不复权）", options: ["", "qfq", "hfq"] }
+  returns:
+    - { name: 日期, type: str, desc: "交易日" }
+    - { name: 股票代码, type: str, desc: "6 位代码" }
+    - { name: 开盘, type: float, desc: "开盘价" }
+    - { name: 收盘, type: float, desc: "收盘价" }
+    - { name: 最高, type: float, desc: "最高价" }
+    - { name: 最低, type: float, desc: "最低价" }
+    - { name: 成交量, type: float, desc: "成交量（手）" }
+    - { name: 成交额, type: float, desc: "成交额（元）" }
+    - { name: 振幅, type: float, desc: "振幅 %" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 涨跌额, type: float, desc: "涨跌额" }
+    - { name: 换手率, type: float, desc: "换手率 %" }
+  sample_params: { symbol: "600519", period: "daily", start_date: "20240101", end_date: "20240131", adjust: "hfq" }
+  tags: [日线, 复权, 东财, 核心接口]
+  returns_verified: true
+  returns_note: "2026-09-16 曾实测 12 列；今日探测受本机代理影响未复测。回测请用 baostock（isST/tradestatus 是复权口径与合规字段的唯一可信来源）"
+
+- id: quote_history.stock_zh_a_hist_min_em
+  name: A股分钟线
+  sub_category: 个股分钟
+  datasource: akshare
+  func_name: stock_zh_a_hist_min_em
+  description: 东方财富-分钟级行情。⚠️ 日期格式是 'YYYY-MM-DD HH:MM:SS'，与日线接口的 YYYYMMDD 不同（实测的坑）
+  symbol_format: plain
+  params:
+    - { name: symbol, type: str, default: "600519", desc: "股票代码" }
+    - { name: start_date, type: str, default: "2024-01-02 09:30:00", desc: "开始时间（YYYY-MM-DD HH:MM:SS）" }
+    - { name: end_date, type: str, default: "2024-01-02 15:00:00", desc: "结束时间（同上）" }
+    - { name: period, type: str, default: "5", desc: "分钟数", options: ["1", "5", "15", "30", "60"] }
+    - { name: adjust, type: str, required: false, default: "", desc: "复权", options: ["", "qfq", "hfq"] }
+  returns:
+    - { name: 时间, type: str, desc: "K线时间" }
+    - { name: 开盘, type: float, desc: "开盘价" }
+    - { name: 收盘, type: float, desc: "收盘价" }
+    - { name: 最高, type: float, desc: "最高价" }
+    - { name: 最低, type: float, desc: "最低价" }
+    - { name: 成交量, type: float, desc: "成交量（手）" }
+    - { name: 成交额, type: float, desc: "成交额（元）" }
+    - { name: 均价, type: float, desc: "均价" }
+  sample_params: { symbol: "600519", start_date: "2024-01-02 09:30:00", end_date: "2024-01-02 15:00:00", period: "5", adjust: "" }
+  tags: [分钟线, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_history.stock_zh_a_daily
+  name: A股日线（新浪，含复权因子）
+  sub_category: 个股日线
+  datasource: akshare
+  func_name: stock_zh_a_daily
+  description: 新浪财经-个股日线。★ adjust='hfq-factor'/'qfq-factor' 可直接拿**复权因子**自行计算，这是东财接口做不到的。⚠️ 文档明示大量抓取容易封 IP
+  params:
+    - { name: symbol, type: str, default: "sh600519", desc: "带小写市场前缀（sh600519）" }
+    - { name: start_date, type: str, default: "20240101", desc: "开始日期（YYYYMMDD）" }
+    - { name: end_date, type: str, default: "20240131", desc: "结束日期（YYYYMMDD）" }
+    - { name: adjust, type: str, required: false, default: "hfq", desc: "复权；另有 hfq-factor / qfq-factor 返回复权因子" }
+  returns:
+    - { name: date, type: str, desc: "交易日" }
+    - { name: open, type: float, desc: "开盘价" }
+    - { name: high, type: float, desc: "最高价" }
+    - { name: low, type: float, desc: "最低价" }
+    - { name: close, type: float, desc: "收盘价" }
+    - { name: volume, type: float, desc: "成交量（股）" }
+    - { name: amount, type: float, desc: "成交额（元）" }
+    - { name: outstanding_share, type: float, desc: "流通股本" }
+    - { name: turnover, type: float, desc: "换手率" }
+  sample_params: { symbol: "sh600519", start_date: "20240101", end_date: "20240131", adjust: "hfq" }
+  tags: [日线, 新浪, 复权因子]
+  returns_verified: true
+  returns_note: "实测 22 行 × 9 列"
+
+- id: quote_history.index_zh_a_hist
+  name: 指数历史行情（日/周/月）
+  sub_category: 指数
+  datasource: akshare
+  func_name: index_zh_a_hist
+  description: 东方财富-指数历史行情。上证指数 000001、沪深300 000300、中证500 000905 等
+  params:
+    - { name: symbol, type: str, default: "000001", desc: "指数代码（6 位数字）" }
+    - { name: period, type: str, default: "daily", desc: "周期", options: ["daily", "weekly", "monthly"] }
+    - { name: start_date, type: str, default: "20240101", desc: "开始日期（YYYYMMDD）" }
+    - { name: end_date, type: str, default: "20240131", desc: "结束日期（YYYYMMDD）" }
+  returns:
+    - { name: 日期, type: str, desc: "交易日" }
+    - { name: 开盘, type: float, desc: "开盘" }
+    - { name: 收盘, type: float, desc: "收盘" }
+    - { name: 最高, type: float, desc: "最高" }
+    - { name: 最低, type: float, desc: "最低" }
+    - { name: 成交量, type: float, desc: "成交量" }
+    - { name: 成交额, type: float, desc: "成交额" }
+  sample_params: { symbol: "000001", period: "daily", start_date: "20240101", end_date: "20240131" }
+  tags: [指数, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档。择时用的上证指数日线在系统内部走 baostock（fetch_index_daily）"
+
+- id: quote_history.index_zh_a_hist_min_em
+  name: 指数分钟线
+  sub_category: 指数
+  datasource: akshare
+  func_name: index_zh_a_hist_min_em
+  description: 东方财富-指数分钟级行情
+  params:
+    - { name: symbol, type: str, default: "000001", desc: "指数代码" }
+    - { name: period, type: str, default: "5", desc: "分钟数", options: ["1", "5", "15", "30", "60"] }
+    - { name: start_date, type: str, default: "2024-01-02 09:30:00", desc: "开始时间（YYYY-MM-DD HH:MM:SS）" }
+    - { name: end_date, type: str, default: "2024-01-02 15:00:00", desc: "结束时间" }
+  returns:
+    - { name: 时间, type: str, desc: "K线时间" }
+    - { name: 开盘, type: float, desc: "开盘" }
+    - { name: 收盘, type: float, desc: "收盘" }
+    - { name: 最高, type: float, desc: "最高" }
+    - { name: 最低, type: float, desc: "最低" }
+    - { name: 成交量, type: float, desc: "成交量" }
+    - { name: 成交额, type: float, desc: "成交额" }
+  sample_params: { symbol: "000001", period: "5", start_date: "2024-01-02 09:30:00", end_date: "2024-01-02 15:00:00" }
+  tags: [指数, 分钟线, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_history.stock_board_industry_hist_em
+  name: 行业板块历史行情
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_industry_hist_em
+  description: 东方财富-行业板块历史 K 线。⚠️ period 的取值是「日k/周k/月k」，与个股接口的 daily/weekly 不同
+  params:
+    - { name: symbol, type: str, default: "小金属", desc: "板块名称（从板块列表接口取）" }
+    - { name: start_date, type: str, default: "20240101", desc: "开始日期（YYYYMMDD）" }
+    - { name: end_date, type: str, default: "20240131", desc: "结束日期（YYYYMMDD）" }
+    - { name: period, type: str, default: "日k", desc: "周期", options: ["日k", "周k", "月k"] }
+    - { name: adjust, type: str, required: false, default: "", desc: "复权", options: ["", "qfq", "hfq"] }
+  returns:
+    - { name: 日期, type: str, desc: "交易日" }
+    - { name: 开盘, type: float, desc: "开盘" }
+    - { name: 收盘, type: float, desc: "收盘" }
+    - { name: 最高, type: float, desc: "最高" }
+    - { name: 最低, type: float, desc: "最低" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 成交额, type: float, desc: "成交额" }
+    - { name: 换手率, type: float, desc: "换手率 %" }
+  sample_params: { symbol: "小金属", start_date: "20240101", end_date: "20240131", period: "日k", adjust: "" }
+  tags: [板块, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_history.stock_board_industry_cons_em
+  name: 行业板块成分股
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_industry_cons_em
+  description: 东方财富-行业板块的成分股列表
+  params:
+    - { name: symbol, type: str, default: "小金属", desc: "板块名称或板块代码" }
+  returns:
+    - { name: 序号, type: int, desc: "序号" }
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 最新价, type: float, desc: "最新价" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 市盈率-动态, type: float, desc: "动态 PE" }
+  sample_params: { symbol: "小金属" }
+  tags: [板块, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_history.stock_board_concept_hist_em
+  name: 概念板块历史行情
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_concept_hist_em
+  description: 东方财富-概念板块历史 K 线
+  params:
+    - { name: symbol, type: str, default: "人工智能", desc: "概念板块名称" }
+    - { name: start_date, type: str, default: "20240101", desc: "开始日期（YYYYMMDD）" }
+    - { name: end_date, type: str, default: "20240131", desc: "结束日期（YYYYMMDD）" }
+    - { name: period, type: str, default: "daily", desc: "周期", options: ["daily", "weekly", "monthly"] }
+    - { name: adjust, type: str, required: false, default: "", desc: "复权", options: ["", "qfq", "hfq"] }
+  returns:
+    - { name: 日期, type: str, desc: "交易日" }
+    - { name: 开盘, type: float, desc: "开盘" }
+    - { name: 收盘, type: float, desc: "收盘" }
+    - { name: 最高, type: float, desc: "最高" }
+    - { name: 最低, type: float, desc: "最低" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+  sample_params: { symbol: "人工智能", start_date: "20240101", end_date: "20240131", period: "daily", adjust: "" }
+  tags: [板块, 概念, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_history.stock_board_concept_cons_em
+  name: 概念板块成分股
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_concept_cons_em
+  description: 东方财富-概念板块成分股列表
+  params:
+    - { name: symbol, type: str, default: "人工智能", desc: "板块名称或板块代码" }
+  returns:
+    - { name: 序号, type: int, desc: "序号" }
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 最新价, type: float, desc: "最新价" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+  sample_params: { symbol: "人工智能" }
+  tags: [板块, 概念, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_history.stock_lhb_detail_em
+  name: 龙虎榜详情
+  sub_category: 龙虎榜
+  datasource: akshare
+  func_name: stock_lhb_detail_em
+  description: 东方财富-数据中心-龙虎榜单（区间内每日上榜个股与席位数据）
+  params:
+    - { name: start_date, type: str, default: "20240102", desc: "开始日期（YYYYMMDD）" }
+    - { name: end_date, type: str, default: "20240105", desc: "结束日期（YYYYMMDD）" }
+  returns:
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 上榜日, type: str, desc: "上榜日期" }
+    - { name: 解读, type: str, desc: "上榜类型解读" }
+    - { name: 收盘价, type: float, desc: "收盘价" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 龙虎榜净买额, type: float, desc: "净买额" }
+    - { name: 龙虎榜买入额, type: float, desc: "买入额" }
+    - { name: 龙虎榜卖出额, type: float, desc: "卖出额" }
+    - { name: 换手率, type: float, desc: "换手率 %" }
+    - { name: 流通市值, type: float, desc: "流通市值" }
+    - { name: 上榜原因, type: str, desc: "原因" }
+    - { name: 上榜后1日, type: float, desc: "上榜后 1 日涨跌幅 %" }
+    - { name: 上榜后5日, type: float, desc: "上榜后 5 日涨跌幅 %" }
+  sample_params: { start_date: "20240102", end_date: "20240105" }
+  tags: [龙虎榜, 东财]
+  returns_verified: true
+  returns_note: "实测 274 行 × 21 列"
+
+- id: quote_history.stock_zt_pool_previous_em
+  name: 昨日涨停股池
+  sub_category: 涨跌停
+  datasource: akshare
+  func_name: stock_zt_pool_previous_em
+  description: 东方财富-昨日涨停股池的今日表现（打板策略的核心观察池）
+  params:
+    - { name: date, type: str, required: true, default: "20240102", desc: "交易日（YYYYMMDD）" }
+  returns:
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 涨跌幅, type: float, desc: "今日涨跌幅 %" }
+    - { name: 最新价, type: float, desc: "最新价" }
+    - { name: 涨停价, type: float, desc: "昨日涨停价" }
+    - { name: 连板数, type: int, desc: "连板数" }
+  sample_params: { date: "20240102" }
+  tags: [涨跌停, 东财, 情绪]
+  returns_verified: false
+  returns_note: "接口连通但任何历史日期都返回空表，无法核对列名。⚠ 根因见本文件末尾「已知限制」"
+
+- id: quote_history.stock_zt_pool_strong_em
+  name: 强势股池
+  sub_category: 涨跌停
+  datasource: akshare
+  func_name: stock_zt_pool_strong_em
+  description: 东方财富-强势股池（未涨停但强势的观察池）
+  params:
+    - { name: date, type: str, required: true, default: "20240102", desc: "交易日（YYYYMMDD）" }
+  returns:
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 最新价, type: float, desc: "最新价" }
+    - { name: 成交额, type: float, desc: "成交额" }
+  sample_params: { date: "20240102" }
+  tags: [涨跌停, 东财, 情绪]
+  returns_verified: false
+  returns_note: "接口连通但任何历史日期都返回空表，无法核对列名。⚠ 根因见本文件末尾「已知限制」"
+
+- id: quote_history.stock_hsgt_hist_em
+  name: 沪深港通资金流向（历史）
+  sub_category: 北向资金
+  datasource: akshare
+  func_name: stock_hsgt_hist_em
+  description: 东方财富-沪深港通历史资金流向（北向/南向可选，全历史序列）
+  params:
+    - { name: symbol, type: str, default: "北向资金", desc: "通道", options: ["北向资金", "沪股通", "深股通", "南向资金", "港股通沪", "港股通深"] }
+  returns:
+    - { name: 日期, type: str, desc: "交易日" }
+    - { name: 当日成交净买额, type: float, desc: "净买额（亿）" }
+    - { name: 买入成交额, type: float, desc: "买入额（亿）" }
+    - { name: 卖出成交额, type: float, desc: "卖出额（亿）" }
+    - { name: 历史累计净买额, type: float, desc: "累计净买额（亿）" }
+    - { name: 当日资金流入, type: float, desc: "资金流入" }
+    - { name: 当日余额, type: float, desc: "余额" }
+    - { name: 持股市值, type: float, desc: "持股市值" }
+    - { name: 领涨股, type: str, desc: "领涨股" }
+  sample_params: { symbol: "北向资金" }
+  tags: [北向, 东财, 历史]
+  returns_verified: true
+  returns_note: "实测 2754 行 × 13 列"
+
+- id: quote_history.stock_margin_sse
+  name: 融资融券汇总（上交所）
+  sub_category: 融资融券
+  datasource: akshare
+  func_name: stock_margin_sse
+  description: 上交所-融资融券汇总（全市场两融余额历史）
+  params:
+    - { name: start_date, type: str, default: "20240102", desc: "开始日期（YYYYMMDD）" }
+    - { name: end_date, type: str, default: "20240105", desc: "结束日期（YYYYMMDD）" }
+  returns:
+    - { name: 信用交易日期, type: str, desc: "日期" }
+    - { name: 融资余额, type: int, desc: "融资余额（元）" }
+    - { name: 融资买入额, type: int, desc: "融资买入额" }
+    - { name: 融券余量, type: int, desc: "融券余量" }
+    - { name: 融券余量金额, type: int, desc: "融券金额" }
+    - { name: 融资融券余额, type: int, desc: "两融余额" }
+  sample_params: { start_date: "20240102", end_date: "20240105" }
+  tags: [两融, 上交所, 历史]
+  returns_verified: true
+  returns_note: "实测 4 行 × 7 列"
+
+- id: quote_history.tool_trade_date_hist_sina
+  name: 交易日历
+  sub_category: 日历
+  datasource: akshare
+  func_name: tool_trade_date_hist_sina
+  description: 新浪财经-交易日历。全部历史交易日单列表。★ 系统内部交易日历走 baostock（带 is_trading_day 标记更完整），这个作备用源
+  params: []
+  returns:
+    - { name: trade_date, type: str, desc: "交易日（1990-12-19 ~ 2026-12-31，实测 8797 行）" }
+  sample_params: {}
+  tags: [日历, 新浪, 核心接口]
+  returns_verified: true
+  returns_note: "实测 8797 行 × 1 列"
+
+# ======================================================================
+# baostock —— 行情主源的核心方法（内部代码格式 sh.600519）
+# ======================================================================
+
+- id: quote_history.bs_fetch_daily
+  name: 个股日线（baostock）★
+  sub_category: 个股日线
+  datasource: baostock
+  func_name: fetch_daily
+  description: baostock query_history_k_data_plus。★ 回测与模拟盘的主数据源：唯一同时提供后复权价 + 逐日 isST + tradestatus 停牌标记的免费源
+  symbol_format: baostock
+  params:
+    - { name: symbol, type: str, default: "sh.600519", desc: "内部代码格式（sh.600519 / sz.000001）" }
+    - { name: start_date, type: str, default: "2024-01-01", desc: "开始日期（YYYY-MM-DD）" }
+    - { name: end_date, type: str, default: "2024-01-31", desc: "结束日期（YYYY-MM-DD）" }
+    - { name: adjust, type: str, required: false, default: "hfq", desc: "复权（hfq 后复权 / qfq 前复权 / none 不复权）", options: ["hfq", "qfq", "none"] }
+  returns:
+    - { name: date, type: datetime, desc: "交易日" }
+    - { name: symbol, type: str, desc: "内部代码" }
+    - { name: open, type: float, desc: "开盘价（复权口径）" }
+    - { name: high, type: float, desc: "最高价" }
+    - { name: low, type: float, desc: "最低价" }
+    - { name: close, type: float, desc: "收盘价" }
+    - { name: preclose, type: float, desc: "昨收（复权口径）" }
+    - { name: volume, type: int, desc: "成交量（股）—— 注意与 akshare 的「手」不同" }
+    - { name: amount, type: float, desc: "成交额（元）" }
+    - { name: turn, type: float, desc: "换手率 %" }
+    - { name: pct_chg, type: float, desc: "涨跌幅 %（baostock 直接口径，无需自行计算）" }
+    - { name: trade_status, type: int, desc: "★ 停牌标记（1=交易 0=停牌）" }
+    - { name: is_st, type: int, desc: "★ 逐日 ST 状态（1=ST）—— 全系统唯一可信来源" }
+  sample_params: { symbol: "sh.600519", start_date: "2024-01-01", end_date: "2024-01-31", adjust: "hfq" }
+  tags: [日线, baostock, 主源, 核心接口]
+  returns_verified: true
+  returns_note: "实测 22 行 × 13 列；isST 实测逐日时变（sz.000004 三次翻转）"
+
+- id: quote_history.bs_fetch_index_daily
+  name: 指数日线（baostock）
+  sub_category: 指数
+  datasource: baostock
+  func_name: fetch_index_daily
+  description: baostock 指数日线。策略的择时与基准数据都用它（sh.000001 上证指数）
+  symbol_format: baostock
+  params:
+    - { name: symbol, type: str, default: "sh.000001", desc: "指数代码（sh.000001 上证指数）" }
+    - { name: start_date, type: str, default: "2024-01-01", desc: "开始日期" }
+    - { name: end_date, type: str, default: "2024-01-31", desc: "结束日期" }
+  returns:
+    - { name: date, type: datetime, desc: "交易日" }
+    - { name: symbol, type: str, desc: "指数代码" }
+    - { name: open, type: float, desc: "开盘" }
+    - { name: high, type: float, desc: "最高" }
+    - { name: low, type: float, desc: "最低" }
+    - { name: close, type: float, desc: "收盘" }
+    - { name: preclose, type: float, desc: "昨收" }
+    - { name: volume, type: int, desc: "成交量（股）" }
+    - { name: amount, type: float, desc: "成交额（元）" }
+    - { name: pct_chg, type: float, desc: "涨跌幅 %" }
+  sample_params: { symbol: "sh.000001", start_date: "2024-01-01", end_date: "2024-01-31" }
+  tags: [指数, baostock, 主源, 择时]
+  returns_verified: true
+  returns_note: "实测 22 行 × 10 列"
+
+- id: quote_history.bs_fetch_trade_dates
+  name: 交易日历（baostock）
+  sub_category: 日历
+  datasource: baostock
+  func_name: fetch_trade_dates
+  description: baostock query_trade_dates。系统交易日历的正式来源（本地缓存于 data/meta/trade_calendar.parquet）
+  params:
+    - { name: start_date, type: str, default: "2024-01-01", desc: "开始日期" }
+    - { name: end_date, type: str, default: "2024-01-31", desc: "结束日期" }
+  returns:
+    - { name: value, type: str, desc: "交易日列表（YYYY-MM-DD）" }
+  sample_params: { start_date: "2024-01-01", end_date: "2024-01-31" }
+  tags: [日历, baostock, 主源]
+  returns_verified: true
+  returns_note: "实测 2024-01 月 22 个交易日，与独立测算一致"
+
+- id: quote_history.bs_fetch_index_constituents
+  name: 历史指数成分股（baostock）★
+  sub_category: 成分股
+  datasource: baostock
+  func_name: fetch_index_constituents
+  description: baostock 指数成分股。★ **支持历史日期**——akshare 的同类接口全都不接受日期参数，这是 baostock 的独有能力，用于消除前视偏差
+  params:
+    - { name: index, type: str, default: "zz500", desc: "指数", options: ["hs300", "zz500", "sz50", "zz1000"] }
+    - { name: day, type: str, required: false, default: "2024-01-02", desc: "交易日（YYYY-MM-DD，可空=最新）" }
+  returns:
+    - { name: update_date, type: str, desc: "成分调整日期" }
+    - { name: code, type: str, desc: "内部代码" }
+    - { name: name, type: str, desc: "简称" }
+  sample_params: { index: "zz500", day: "2024-01-02" }
+  tags: [成分股, baostock, 主源, 独有能力]
+  returns_verified: true
+  returns_note: "实测 2024-01-02 中证500 成分 500 只 × 3 列"
+
+# ============================================================
+# 已知限制：东财「涨停/跌停/强势股池」系列接口
+# ============================================================
+# 涉及 quote_history.stock_zt_pool_previous_em / stock_zt_pool_strong_em
+#      + quote_realtime.stock_zt_pool_em（定义在 quote_realtime.yaml）
+#
+# 现象：样例日期返回 0 行 × 0 列，但**不报错**（接口连通、HTTP 200）。
+#
+# 根因（2026-09-18 实测）：
+#   akshare 里 6 个同类接口（stock_zt_pool_em / previous_em / strong_em /
+#   dtgc_em / zbgc_em / sub_new_em）**全部只走东财 push2ex.eastmoney.com
+#   这一个域名**，没有非东财的替代源。而该接口只保留**最近 1~2 个交易日**
+#   的数据：
+#       20240102 → (0, 0)      20260916 → (89, 16)
+#       20240415 → (0, 0)      20260917 → (47, 16)
+#       20241231 → (0, 0)      20260918 → (0, 0)  ← 当天数据当日不可得
+#   即：**历史日期一律空表**，只有最近一两个交易日能取到。
+#
+# 处置（主人 2026-09-18 拍板）：
+#   暂不外接其他数据源，三个接口的 default / sample_params 统一为
+#   2024-01-02。**试跑会返回空表，这是预期行为，不是接口坏了**——
+#   前端已对 0 行结果显示「返回空表」提示。
+#
+# 待办：若要真正用于策略，只能
+#   (a) 改为「每日盘后抓取当日」并在本地落盘历史（推荐，与模块 4 日度跑批天然契合）；
+#   (b) 或引入 tushare `limit_list`（需积分）/ 自建涨停判定（用 baostock 的
+#       preclose + pctChg + 板块涨跌幅限制推导，注意 ST 5%、创业板 20%）。
+#   详见 docs/开发进度.md「问题集」Q1。

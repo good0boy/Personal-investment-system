@@ -1,0 +1,297 @@
+# ============================================================
+# 模块 1 · 接口目录 —— 实时行情
+# ============================================================
+# ⚠️ 实时接口的返回是"当下"的，本目录中的行数/列数为探测当日的快照，
+#    实际行数会随市场变化（全市场快照约 5600 行）。
+
+- id: quote_realtime.stock_zh_a_spot_em
+  name: 全市场实时快照 ★
+  sub_category: 快照
+  datasource: akshare
+  func_name: stock_zh_a_spot_em
+  description: 东方财富-沪深京 A 股实时行情。一次返回全部 A 股（5000+ 只），是实时数据的首选接口 —— 优先用它而不是逐股拉取
+  params: []
+  returns:
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 最新价, type: float, desc: "最新价（元）" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 涨跌额, type: float, desc: "涨跌额" }
+    - { name: 成交量, type: float, desc: "成交量（手）" }
+    - { name: 成交额, type: float, desc: "成交额（元）" }
+    - { name: 振幅, type: float, desc: "振幅 %" }
+    - { name: 最高, type: float, desc: "最高价" }
+    - { name: 最低, type: float, desc: "最低价" }
+    - { name: 今开, type: float, desc: "今开" }
+    - { name: 昨收, type: float, desc: "昨收" }
+    - { name: 量比, type: float, desc: "量比" }
+    - { name: 换手率, type: float, desc: "换手率 %" }
+    - { name: 市盈率-动态, type: float, desc: "动态 PE" }
+    - { name: 市净率, type: float, desc: "PB" }
+    - { name: 总市值, type: float, desc: "总市值（元）" }
+    - { name: 流通市值, type: float, desc: "流通市值（元）" }
+    - { name: 60日涨跌幅, type: float, desc: "60 日涨跌幅 %" }
+    - { name: 年初至今涨跌幅, type: float, desc: "年初至今 %" }
+  sample_params: {}
+  tags: [实时, 东财, 全市场, 核心接口]
+  returns_verified: false
+  returns_note: "本机代理对东财 push2 域名受限未能实测；列名依据 akshare 文档。系统内部使用经 akshare_client.fetch_spot()（含字段映射）"
+
+- id: quote_realtime.stock_bid_ask_em
+  name: 买卖五档盘口
+  sub_category: 盘口
+  datasource: akshare
+  func_name: stock_bid_ask_em
+  description: 东方财富-行情报价，个股买卖五档
+  symbol_format: plain
+  params:
+    - { name: symbol, type: str, default: "600519", desc: "股票代码（6 位数字）" }
+  returns:
+    - { name: item, type: str, desc: "条目（sell_5 ~ buy_5、sell_px_5 ~ buy_px_5、时间等）" }
+    - { name: value, type: str, desc: "条目值" }
+  sample_params: { symbol: "600519" }
+  tags: [实时, 东财, 盘口]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_realtime.stock_intraday_em
+  name: 当日分时成交
+  sub_category: 分时
+  datasource: akshare
+  func_name: stock_intraday_em
+  description: 东方财富-分时数据，逐笔成交明细（时间/价格/手数/买卖盘性质）
+  symbol_format: plain
+  params:
+    - { name: symbol, type: str, default: "600519", desc: "股票代码（6 位数字）" }
+  returns:
+    - { name: 时间, type: str, desc: "成交时间" }
+    - { name: 成交价, type: float, desc: "成交价（元）" }
+    - { name: 手数, type: int, desc: "手数" }
+    - { name: 买卖盘性质, type: str, desc: "买盘/卖盘/中性盘" }
+  sample_params: { symbol: "600519" }
+  tags: [实时, 东财, 分时]
+  returns_verified: true
+  returns_note: "实测约 3600 行 × 4 列（一个交易日的逐笔）"
+
+- id: quote_realtime.stock_zh_a_hist_pre_min_em
+  name: 盘前分时
+  sub_category: 分时
+  datasource: akshare
+  func_name: stock_zh_a_hist_pre_min_em
+  description: 东方财富-当日分时行情（含盘前数据）
+  symbol_format: plain
+  params:
+    - { name: symbol, type: str, default: "600519", desc: "股票代码" }
+    - { name: start_time, type: str, required: false, default: "09:00:00", desc: "开始时间" }
+    - { name: end_time, type: str, required: false, default: "15:50:00", desc: "结束时间" }
+  returns:
+    - { name: 时间, type: str, desc: "时间" }
+    - { name: 开盘, type: float, desc: "开盘" }
+    - { name: 收盘, type: float, desc: "收盘（当前价）" }
+    - { name: 最高, type: float, desc: "最高" }
+    - { name: 最低, type: float, desc: "最低" }
+    - { name: 成交量, type: float, desc: "成交量" }
+    - { name: 成交额, type: float, desc: "成交额" }
+    - { name: 均价, type: float, desc: "均价" }
+  sample_params: { symbol: "600519" }
+  tags: [实时, 东财, 分时]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_realtime.stock_individual_fund_flow
+  name: 个股资金流向（历史）
+  sub_category: 资金流
+  datasource: akshare
+  func_name: stock_individual_fund_flow
+  description: 东方财富-个股资金流向（每日主力/超大单/大单/中单/小单净流入，历史序列）
+  params:
+    - { name: stock, type: str, default: "600519", desc: "股票代码（6 位数字）" }
+    - { name: market, type: str, default: "sh", desc: "市场（sh/sz/bj）", options: ["sh", "sz", "bj"] }
+  returns:
+    - { name: 日期, type: str, desc: "交易日" }
+    - { name: 收盘价, type: float, desc: "收盘价" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 主力净流入-净额, type: float, desc: "主力净流入（元）" }
+    - { name: 主力净流入-净占比, type: float, desc: "主力净占比 %" }
+    - { name: 超大单净流入-净额, type: float, desc: "超大单净流入" }
+    - { name: 大单净流入-净额, type: float, desc: "大单净流入" }
+    - { name: 中单净流入-净额, type: float, desc: "中单净流入" }
+    - { name: 小单净流入-净额, type: float, desc: "小单净流入" }
+  sample_params: { stock: "600519", market: "sh" }
+  tags: [资金流, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_realtime.stock_individual_fund_flow_rank
+  name: 资金流排名（全市场）
+  sub_category: 资金流
+  datasource: akshare
+  func_name: stock_individual_fund_flow_rank
+  description: 东方财富-数据中心-资金流向排名
+  params:
+    - { name: indicator, type: str, default: "今日", desc: "统计周期", options: ["今日", "3日", "5日", "10日"] }
+  returns:
+    - { name: 序号, type: int, desc: "排名" }
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 最新价, type: float, desc: "最新价" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 主力净流入-净额, type: float, desc: "主力净流入" }
+    - { name: 主力净流入-净占比, type: float, desc: "净占比 %" }
+    - { name: "...超大/大/中/小单", type: "-", desc: "同个股资金流" }
+  sample_params: { indicator: "今日" }
+  tags: [资金流, 东财, 全市场]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_realtime.stock_zh_index_spot_em
+  name: 指数实时行情
+  sub_category: 快照
+  datasource: akshare
+  func_name: stock_zh_index_spot_em
+  description: 东方财富-沪深京指数实时行情（按系列查询）
+  params:
+    - { name: symbol, type: str, default: "上证系列指数", desc: "指数系列", options: ["沪深重要指数", "上证系列指数", "深证系列指数", "指数成份", "中证系列指数"] }
+  returns:
+    - { name: 代码, type: str, desc: "指数代码" }
+    - { name: 名称, type: str, desc: "指数名称" }
+    - { name: 最新价, type: float, desc: "点位" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 成交额, type: float, desc: "成交额" }
+  sample_params: { symbol: "上证系列指数" }
+  tags: [实时, 东财, 指数]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档。上证指数日线请用历史行情类接口"
+
+- id: quote_realtime.stock_board_industry_name_em
+  name: 行业板块列表
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_industry_name_em
+  description: 东方财富-行业板块名称列表（板块名是其他板块接口的入参）
+  params: []
+  returns:
+    - { name: 排名, type: int, desc: "排名" }
+    - { name: 板块名称, type: str, desc: "★ 后续板块接口的入参" }
+    - { name: 板块代码, type: str, desc: "板块代码" }
+    - { name: 最新价, type: float, desc: "板块点位" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 上涨家数, type: int, desc: "成分股上涨数" }
+    - { name: 领涨股票, type: str, desc: "领涨股" }
+  sample_params: {}
+  tags: [板块, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_realtime.stock_board_industry_spot_em
+  name: 行业板块实时行情
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_industry_spot_em
+  description: 东方财富-指定行业板块的实时行情与成分概览
+  params:
+    - { name: symbol, type: str, default: "小金属", desc: "板块名称或板块代码（名称先从列表接口拿）" }
+  returns:
+    - { name: 序号, type: int, desc: "序号" }
+    - { name: 代码, type: str, desc: "成分股代码" }
+    - { name: 名称, type: str, desc: "成分股简称" }
+    - { name: 最新价, type: float, desc: "最新价" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+  sample_params: { symbol: "小金属" }
+  tags: [板块, 东财]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_realtime.stock_board_concept_name_em
+  name: 概念板块列表
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_concept_name_em
+  description: 东方财富-概念板块名称列表
+  params: []
+  returns:
+    - { name: 排名, type: int, desc: "排名" }
+    - { name: 板块名称, type: str, desc: "概念板块名" }
+    - { name: 板块代码, type: str, desc: "板块代码" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 上涨家数, type: int, desc: "上涨数" }
+  sample_params: {}
+  tags: [板块, 东财, 概念]
+  returns_verified: false
+  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+
+- id: quote_realtime.stock_hsgt_fund_flow_summary_em
+  name: 沪深港通资金流向
+  sub_category: 北向资金
+  datasource: akshare
+  func_name: stock_hsgt_fund_flow_summary_em
+  description: 东方财富-沪深港通资金流向汇总（北向/南向四个通道的当日概览）
+  params: []
+  returns:
+    - { name: 交易日, type: str, desc: "交易日" }
+    - { name: 类型, type: str, desc: "沪股通/深股通/港股通（沪/深）" }
+    - { name: 板块, type: str, desc: "板块" }
+    - { name: 资金方向, type: str, desc: "资金方向" }
+    - { name: 成交净买额, type: float, desc: "净买额（亿）" }
+    - { name: 资金净流入, type: float, desc: "净流入（亿）" }
+    - { name: 当日资金余额, type: float, desc: "余额（亿）" }
+    - { name: 上涨数, type: int, desc: "上涨家数" }
+    - { name: 相关指数, type: str, desc: "相关指数名" }
+    - { name: 指数涨跌幅, type: float, desc: "指数涨跌幅 %" }
+  sample_params: {}
+  tags: [北向, 东财]
+  returns_verified: true
+  returns_note: "实测 4 行 × 13 列"
+
+- id: quote_realtime.stock_zt_pool_em
+  name: 涨停股池
+  sub_category: 涨跌停
+  datasource: akshare
+  func_name: stock_zt_pool_em
+  description: 东方财富-涨停板行情-涨停股池（含封板资金、连板数）
+  params:
+    - { name: date, type: str, required: true, default: "20240102", desc: "交易日（YYYYMMDD）" }
+  returns:
+    - { name: 序号, type: int, desc: "序号" }
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 最新价, type: float, desc: "最新价" }
+    - { name: 成交额, type: float, desc: "成交额" }
+    - { name: 流通市值, type: float, desc: "流通市值" }
+    - { name: 换手率, type: float, desc: "换手率 %" }
+    - { name: 封板资金, type: float, desc: "封板资金（元）" }
+    - { name: 首次封板时间, type: str, desc: "首封时间" }
+    - { name: 最后封板时间, type: str, desc: "末封时间" }
+    - { name: 炸板次数, type: int, desc: "炸板次数" }
+    - { name: 涨停统计, type: str, desc: "如 2/2（N天M板）" }
+    - { name: 连板数, type: int, desc: "连板数" }
+    - { name: 所属行业, type: str, desc: "行业" }
+  sample_params: { date: "20240102" }
+  tags: [涨跌停, 东财, 情绪]
+  returns_verified: false
+  returns_note: "⚠ 东财该接口只保留最近 1~2 个交易日，历史日期一律返回空表 → 列名无法核对。根因见 quote_history.yaml 末尾「已知限制」"
+  returns_note: "接口连通（HTTP 200），但样例日期返回空表未能核对列名；列名依据 akshare 文档"
+
+- id: quote_realtime.stock_margin_detail_sse
+  name: 融资融券明细（上交所）
+  sub_category: 融资融券
+  datasource: akshare
+  func_name: stock_margin_detail_sse
+  description: 上交所-融资融券明细（按标的逐只）
+  params:
+    - { name: date, type: str, default: "20240102", desc: "交易日（YYYYMMDD）" }
+  returns:
+    - { name: 信用交易日期, type: str, desc: "日期" }
+    - { name: 标的证券代码, type: str, desc: "6 位代码" }
+    - { name: 标的证券简称, type: str, desc: "简称" }
+    - { name: 融资余额, type: int, desc: "融资余额（元）" }
+    - { name: 融资买入额, type: int, desc: "融资买入额" }
+    - { name: 融资偿还额, type: int, desc: "融资偿还额" }
+    - { name: 融券余量, type: int, desc: "融券余量" }
+    - { name: 融券卖出量, type: int, desc: "融券卖出量" }
+    - { name: 融券偿还量, type: int, desc: "融券偿还量" }
+  sample_params: { date: "20240102" }
+  tags: [两融, 上交所]
+  returns_verified: true
+  returns_note: "实测 1771 行 × 9 列"

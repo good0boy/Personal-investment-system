@@ -1,0 +1,33 @@
+# ============================================================
+# 行尾与文本属性 —— 显式声明，不依赖各台机器的 core.autocrlf
+#
+# 背景：开发机是 Windows（core.autocrlf=true），部署机是 Linux。
+#       靠本地配置决定行尾会让"仓库里存的到底是什么"变成机器相关的，
+#       Docker 构建时复制的是**工作区**文件，行尾不一致会引入难查的问题。
+#
+# 规则：源码统一 LF（Windows/Linux 都能正确处理）；
+#       只有 Windows 批处理脚本强制 CRLF（cmd.exe 对 LF 支持不可靠）。
+# ============================================================
+
+* text=auto eol=lf
+
+# Windows 脚本必须 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：禁止做任何行尾转换与 diff（防止数据文件被破坏）
+*.parquet binary
+*.db binary
+*.db-wal binary
+*.db-shm binary
+*.pyc binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# 锁文件：不参与 diff 统计（体积大且机器生成）
+package-lock.json linguist-generated=true -diff
+uv.lock linguist-generated=true -diff

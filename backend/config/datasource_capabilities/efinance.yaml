@@ -1,0 +1,128 @@
+# ============================================================
+# 数据源能力声明 —— efinance
+# 模块 1「数据源能力矩阵」页面的数据来源。
+#
+# ⚠️⚠️ 本文件【未在本环境实测】⚠️⚠️
+#   以下支持情况依据其 GitHub 仓库说明与公开资料整理（2026-09 核对）。
+#   页面会把 verified=false 的数据源整列标灰。
+# ============================================================
+
+name: "efinance"
+display_name: "efinance"
+role: "备用（东财网页封装）"
+package: "efinance"
+version_pin: ""
+homepage: "https://github.com/Micro-sheep/efinance"
+license: "开源免费，无需注册"
+
+verified: false
+verified_at: null
+verified_by: null
+verified_note: "未实测。它与 akshare 抓同一批东方财富接口，因此下行风险高度相关 —— 东财改版会同时影响两者，不能当作独立冗余源。"
+
+symbol_format: "600519 | 000001"
+symbol_note: "6 位纯数字，与 akshare 的主流格式一致。"
+
+auth:
+  required: false
+  note: "无需登录"
+
+capabilities:
+  # ---------- 行情 ----------
+  daily_kline:
+    supported: true
+    quality: "good"
+    note: "stock.get_quote_history，支持日/周/月"
+    priority: "备选"
+  minute_kline:
+    supported: true
+    quality: "good"
+    note: "同一个接口换 klt 参数可拿分钟线"
+    priority: "备选"
+  adjust_factor:
+    supported: true
+    quality: "fair"
+    note: "接口带复权参数，但**没有独立的复权因子接口**，无法自算精确复权"
+    priority: "备选"
+  realtime_quote:
+    supported: true
+    quality: "good"
+    note: "stock.get_realtime_quotes，一次可取全市场"
+    priority: "备选"
+  index_daily:
+    supported: true
+    quality: "good"
+    note: "stock.get_quote_history 对指数同样适用"
+    priority: "备选"
+
+  # ---------- 合规与风控 ----------
+  daily_st_status:
+    supported: false
+    quality: "none"
+    note: "❌ 无 ST 状态字段。与 akshare 同源，同样只有当前名称"
+    priority: "-"
+  halt_status:
+    supported: false
+    quality: "none"
+    note: "❌ 无停牌标记字段"
+    priority: "-"
+  delisted_history:
+    supported: false
+    quality: "none"
+    note: "❌ 未提供退市股专项支持"
+    priority: "-"
+
+  # ---------- 股票池与日历 ----------
+  historical_index_cons:
+    supported: false
+    quality: "none"
+    note: "❌ 只有当前成分股，无历史日期参数"
+    priority: "-"
+  all_stock_list:
+    supported: true
+    quality: "good"
+    note: "stock.get_realtime_quotes() 无参即全市场"
+    priority: "备选"
+  trade_calendar:
+    supported: false
+    quality: "none"
+    note: "❌ 无专用交易日历接口（可用指数 K 线日期间接推断）"
+    priority: "-"
+
+  # ---------- 基本面 ----------
+  fundamentals:
+    supported: true
+    quality: "good"
+    note: "个股财务数据接口可用，字段量少于 akshare"
+    priority: "备选"
+  industry_classification:
+    supported: true
+    quality: "fair"
+    note: "通过板块接口间接获得"
+    priority: "备选"
+
+  # ---------- 板块与资金 ----------
+  sector_board:
+    supported: true
+    quality: "good"
+    note: "行业/概念板块列表与成分"
+    priority: "备选"
+  fund_flow:
+    supported: true
+    quality: "fair"
+    note: "资金流接口可用"
+    priority: "备选"
+  dragon_tiger:
+    supported: true
+    quality: "fair"
+    note: "龙虎榜接口可用"
+    priority: "备选"
+
+stability:
+  interface_change_risk: "high"
+  note: "★ 与 akshare 同样依赖东方财富网页结构，改版即失效。**它不构成独立冗余** —— 想降低单点风险，要找数据来源不同的库（baostock / pytdx），而不是同一批网页的另一个封装。"
+
+pitfalls:
+  - "★ 与 akshare 同源（东财），不具备对冲价值。两者会同时坏"
+  - "社区规模小于 akshare，接口失效后的修复速度取决于维护者"
+  - "无 ST / 停牌 / 复权因子接口 → 不能用于本项目的回测数据源"

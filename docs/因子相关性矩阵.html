@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>因子相关性矩阵 · 截面秩相关</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  body { font-family: "Microsoft YaHei", system-ui, sans-serif; margin: 24px;
+         background: #fafafa; color: #222; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .meta { color: #666; font-size: 13px; margin-bottom: 12px; }
+  #chart { width: 100%; max-width: 980px; height: 760px; background: #fff;
+           border: 1px solid #e5e5e5; border-radius: 8px; }
+  .notes { font-size: 12px; color: #555; margin: 14px 0; max-width: 960px; }
+  table { border-collapse: collapse; font-size: 13px; background: #fff; }
+  th, td { border: 1px solid #e0e0e0; padding: 5px 14px; text-align: left; }
+  th { background: #f0f0f0; }
+  td.warn { color: #c0392b; font-weight: 600; }
+  h2 { font-size: 15px; margin: 20px 0 8px; }
+</style>
+</head>
+<body>
+<h1>因子相关性矩阵 · 逐日截面秩相关的时序平均</h1>
+<div class="meta">1539 个交易日｜日均有效 4117.0 只｜区间 2020-01-01 ~ 2026-09-20</div>
+<div id="chart"></div>
+<h2>口径说明</h2>
+<ul class="notes"><li>逐日截面 Spearman 秩相关（平均秩口径，与 IC 一致）对日序做平均</li><li>样本 = 当日可交易池 ∩ 11 个因子全部非 NaN 的完整个案（listwise）</li><li>秩上 Pearson == Spearman；并列值取平均名次</li><li>相关 ≠ 因果；高相关只说明选股重叠，合成前还需看各自 IC 方向</li></ul>
+<h2>绝对相关最高的 20 对（|rho| ≥ 0.7 标红 = 合成前需二选一或做正交化）</h2>
+<table>
+<tr><th>因子 A</th><th>因子 B</th><th>平均 ρ</th></tr>
+<tr><td>ma_bias_20</td><td>ret_10</td><td class="warn">+0.885</td></tr><tr><td>max_ret_20</td><td>volatility_20</td><td class="warn">+0.873</td></tr><tr><td>ma_bias_20</td><td>rsi_14</td><td class="warn">+0.863</td></tr><tr><td>ma_bias_20</td><td>momentum_20</td><td class="warn">+0.800</td></tr><tr><td>amplitude_5</td><td>volatility_20</td><td class="warn">+0.780</td></tr><tr><td>ret_10</td><td>rsi_14</td><td class="warn">+0.748</td></tr><tr><td>momentum_20</td><td>rsi_14</td><td class="warn">+0.732</td></tr><tr><td>turnover_20</td><td>volatility_20</td><td class="warn">+0.712</td></tr><tr><td>ret_3</td><td>ret_5</td><td class="warn">+0.711</td></tr><tr><td>amplitude_5</td><td>max_ret_20</td><td class="">+0.694</td></tr><tr><td>ma_bias_20</td><td>ret_5</td><td class="">+0.692</td></tr><tr><td>ret_10</td><td>ret_5</td><td class="">+0.631</td></tr><tr><td>momentum_20</td><td>ret_10</td><td class="">+0.625</td></tr><tr><td>amplitude_5</td><td>turnover_20</td><td class="">+0.605</td></tr><tr><td>max_ret_20</td><td>turnover_20</td><td class="">+0.585</td></tr><tr><td>ma_bias_20</td><td>ret_3</td><td class="">+0.544</td></tr><tr><td>ret_5</td><td>rsi_14</td><td class="">+0.506</td></tr><tr><td>ret_3</td><td>today_pct</td><td class="">+0.501</td></tr><tr><td>ret_10</td><td>ret_3</td><td class="">+0.467</td></tr><tr><td>momentum_20</td><td>ret_5</td><td class="">+0.414</td></tr>
+</table>
+<script>
+const P = {"labels": ["amplitude_5\n近5日平均振幅", "ma_bias_20\n20日乖离率", "max_ret_20\n20日最大单日涨幅", "momentum_20\n20日动量", "ret_10\n近10日累计收益", "ret_3\n近3日累计收益", "ret_5\n近5日累计收益", "rsi_14\nRSI(14)", "today_pct\n当日涨跌幅", "turnover_20\n20日平均换手率", "volatility_20\n20日波动率"], "data": [[0, 0, 1.0], [1, 0, 0.2729], [2, 0, 0.6935], [3, 0, 0.3161], [4, 0, 0.2452], [5, 0, 0.0692], [6, 0, 0.1621], [7, 0, 0.2852], [8, 0, -0.0129], [9, 0, 0.6047], [10, 0, 0.7801], [0, 1, 0.2729], [1, 1, 1.0], [2, 1, 0.2568], [3, 1, 0.8002], [4, 1, 0.8855], [5, 1, 0.5441], [6, 1, 0.6919], [7, 1, 0.8627], [8, 1, 0.3019], [9, 1, 0.0357], [10, 1, 0.0902], [0, 2, 0.6935], [1, 2, 0.2568], [2, 2, 1.0], [3, 2, 0.405], [4, 2, 0.2002], [5, 2, 0.0509], [6, 2, 0.0971], [7, 2, 0.2739], [8, 2, -0.0034], [9, 2, 0.5847], [10, 2, 0.8727], [0, 3, 0.3161], [1, 3, 0.8002], [2, 3, 0.405], [3, 3, 1.0], [4, 3, 0.6255], [5, 3, 0.3088], [6, 3, 0.4145], [7, 3, 0.7322], [8, 3, 0.1592], [9, 3, 0.1346], [10, 3, 0.2151], [0, 4, 0.2452], [1, 4, 0.8855], [2, 4, 0.2002], [3, 4, 0.6255], [4, 4, 1.0], [5, 4, 0.4674], [6, 4, 0.6311], [7, 4, 0.748], [8, 4, 0.247], [9, 4, 0.0228], [10, 4, 0.0685], [0, 5, 0.0692], [1, 5, 0.5441], [2, 5, 0.0509], [3, 5, 0.3088], [4, 5, 0.4674], [5, 5, 1.0], [6, 5, 0.7106], [7, 5, 0.382], [8, 5, 0.5008], [9, 5, -0.0361], [10, 5, -0.0188], [0, 6, 0.1621], [1, 6, 0.6919], [2, 6, 0.0971], [3, 6, 0.4145], [4, 6, 0.6311], [5, 6, 0.7106], [6, 6, 1.0], [7, 6, 0.5057], [8, 6, 0.3725], [9, 6, -0.0222], [10, 6, 0.0051], [0, 7, 0.2852], [1, 7, 0.8627], [2, 7, 0.2739], [3, 7, 0.7322], [4, 7, 0.748], [5, 7, 0.382], [6, 7, 0.5057], [7, 7, 1.0], [8, 7, 0.2045], [9, 7, 0.0667], [10, 7, 0.1213], [0, 8, -0.0129], [1, 8, 0.3019], [2, 8, -0.0034], [3, 8, 0.1592], [4, 8, 0.247], [5, 8, 0.5008], [6, 8, 0.3725], [7, 8, 0.2045], [8, 8, 1.0], [9, 8, -0.041], [10, 8, -0.0385], [0, 9, 0.6047], [1, 9, 0.0357], [2, 9, 0.5847], [3, 9, 0.1346], [4, 9, 0.0228], [5, 9, -0.0361], [6, 9, -0.0222], [7, 9, 0.0667], [8, 9, -0.041], [9, 9, 1.0], [10, 9, 0.712], [0, 10, 0.7801], [1, 10, 0.0902], [2, 10, 0.8727], [3, 10, 0.2151], [4, 10, 0.0685], [5, 10, -0.0188], [6, 10, 0.0051], [7, 10, 0.1213], [8, 10, -0.0385], [9, 10, 0.712], [10, 10, 1.0]], "colors": ["#313695", "#4575b4", "#74add1", "#abd9e9", "#e0f3f8", "#ffffbf", "#fee090", "#fdae61", "#f46d43", "#d73027", "#a50026"]};
+const chart = echarts.init(document.getElementById("chart"));
+chart.setOption({
+  tooltip: {
+    position: "top",
+    formatter: p => `${P.labels[p.value[1]].split("\n")[0]} × ` +
+      `${P.labels[p.value[0]].split("\n")[0]}<br>ρ = ${Number(p.value[2]).toFixed(3)}`
+  },
+  grid: { left: 130, bottom: 110, right: 120, top: 20 },
+  xAxis: { type: "category", data: P.labels, splitArea: { show: true },
+           axisLabel: { fontSize: 10, interval: 0, rotate: 45 } },
+  yAxis: { type: "category", data: P.labels, splitArea: { show: true },
+           axisLabel: { fontSize: 10, interval: 0 } },
+  visualMap: {
+    min: -1, max: 1, calculable: true, orient: "vertical",
+    right: 8, top: "center", precision: 2,
+    inRange: { color: P.colors }
+  },
+  series: [{
+    type: "heatmap", data: P.data,
+    label: { show: true, fontSize: 9,
+             formatter: p => Number(p.value[2]).toFixed(2) },
+    emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "rgba(0,0,0,0.4)" } }
+  }]
+});
+window.addEventListener("resize", () => chart.resize());
+</script>
+</body>
+</html>

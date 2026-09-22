@@ -1,0 +1,38 @@
+# ============================================================
+# A股投资本地服务 · 后端依赖
+# 安装：pip install -r requirements.txt
+# 注意：akshare 必须锁死版本（版本间常有 breaking change）
+# ============================================================
+
+# ---------- Web 框架 ----------
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+pydantic-settings>=2.6
+
+# ---------- 数据源 ----------
+# baostock==0.9.3 是 pip 可见的版本号；
+#   注意 baostock.__version__ 返回的是它自己格式化的 "00.9.30"，与 pip 版本号不同名，别搞混
+baostock==0.9.3          # ★ 行情主源：日线/指数/isST/停牌/退市股/历史成分股
+akshare==1.18.94         # 广度源：实时/基本面/板块（锁死版本）
+
+# ---------- 数据处理与存储 ----------
+pandas>=2.2,<3.0         # 显式排除 3.0（Copy-on-Write 等破坏性变更）
+numpy>=1.26
+pyarrow>=18.0
+duckdb>=1.1
+
+# ---------- 调度 / 网络 / 工具 ----------
+apscheduler>=3.10
+httpx>=0.27
+pyyaml>=6.0
+jinja2>=3.1
+python-dotenv>=1.0
+loguru>=0.7
+# 注：重试策略由 app/services/data_source/base.py 的 call_with_retry 自行实现
+#（需要"限频不重试"这类定制逻辑，tenacity 表达起来反而更绕），故不引入 tenacity
+
+# ---------- 开发 ----------
+pytest>=8.3
+pytest-asyncio>=0.24
+ruff>=0.7

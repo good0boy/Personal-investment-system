@@ -1,0 +1,62 @@
+# ============================================================
+# 工具链配置（pytest / ruff）
+#
+# ⚠️ 依赖清单以 requirements.txt 为准，不用 pyproject 管理依赖。
+#    这里只放工具配置，因此没有 [project] 段。
+# ============================================================
+
+# ---------------- pytest ----------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# 让 `import app.*` 与 `import tools.*` 无需安装即可工作
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: 需要真实网络或大数据量的用例",
+    "network: 需要访问外部数据源",
+]
+
+# ---------------- ruff ----------------
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = [".venv", "build", "dist", "node_modules"]
+
+[tool.ruff.lint]
+# 规则集选择说明（刻意不用 "ALL"）：
+#   E/W  pycodestyle
+#   F    pyflakes（未用导入、未定义名）
+#   I    isort（导入排序）
+#   UP   pyupgrade（过时写法）
+#   B    flake8-bugbear（常见陷阱）
+#   C4   flake8-comprehensions
+#   SIM  flake8-simplify
+#   RUF  ruff 自有规则（含 RUF100 —— 清理无效的 noqa）
+#   PLC0415  import-outside-top-level（本项目大量使用延迟导入破循环依赖，
+#            需要显式 noqa 并说明原因，因此特意启用）
+#
+# 刻意**未**启用的：
+#   BLE001（blind-except）—— 数据源/存储边界处刻意捕获宽异常，
+#            逐处加 noqa 只会变成噪音；宽异常的收敛点是 AppError 体系。
+#   D（pydocstyle）—— 本项目用中文文档字符串，不追 Google 风格编号。
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RUF", "PLC0415"]
+ignore = [
+    # 本项目注释与文档字符串使用中文，全角标点（：；，（））会被
+    # RUF001/002/003 误判为"易混淆 Unicode 字符"。这是纯误报，必须关闭。
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tools", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里用 conftest 的相对导入与断言，放宽若干规则
+"tests/*" = ["PLC0415"]
+# 脚本类工具需要先改 sys.path 再导入
+"tools/*" = ["E402"]
+# 该模块的 __all__ 刻意按主题分组（客户端 / 便捷取数 / 类型 / 节流），
+# 组内有序、组间有注释分隔；强制全局字典序会破坏可读性
+"app/services/data_source/__init__.py" = ["RUF022"]

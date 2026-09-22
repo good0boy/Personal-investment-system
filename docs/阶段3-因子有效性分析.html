@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<title>阶段 3 · 因子有效性分析报告</title>
+<style>
+:root{--up:#d03050;--down:#18a058;--brand:#185fa5;--warn:#d97706;--line:#e4e7ed;--muted:#8a8f99}
+*{box-sizing:border-box}
+body{margin:0;background:#f5f6f8;color:#1f2329;font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:22px;margin:0 0 6px}
+h2{font-size:16px;margin:30px 0 12px;padding-left:10px;border-left:3px solid var(--brand)}
+.sub{color:var(--muted);font-size:13px;margin:0 0 20px}
+.card{background:#fff;border:.5px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}
+.verdict{border-left:4px solid var(--down)}
+.verdict b{color:var(--down)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 8px;border-bottom:.5px solid var(--line);text-align:left;white-space:nowrap}
+th{background:#f7f8fa;font-weight:500;color:#5a6069;font-size:12.5px}
+td.num{text-align:right;font-family:ui-monospace,Consolas,monospace}
+.pos{color:var(--up);font-weight:600} .neg{color:var(--down);font-weight:600}
+.warn{color:var(--warn)}
+tr.hl{background:#fff8ec}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+.chart{width:100%;height:auto;display:block}
+.lbl{font-size:12px;fill:#3a3f47} .val{font-size:11px;fill:#5a6069}
+.barval{font-size:10.5px;fill:#3a3f47} .ax{font-size:11px;fill:var(--muted)}
+.legend{display:flex;gap:18px;font-size:12.5px;color:#5a6069;margin:6px 0 2px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+ul{margin:8px 0 0;padding-left:20px;font-size:13px;color:#5a6069}
+ul li{margin-bottom:5px}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:4px}
+.kv div{background:#f7f8fa;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#5a6069}
+.kv b{display:block;font-size:15px;color:#1f2329;font-weight:600;margin-top:3px}
+</style></head><body><div class="wrap">
+
+<h1>阶段 3 · 模块 2 因子库 —— 因子有效性分析报告</h1>
+<p class="sub">生成于 2026-09-20 09:35　｜　
+区间 2020-05-20 ~ 2026-09-15（1537 个可用交易日）　｜　
+5 组分层　｜　持有 1 个交易日　｜　
+日均股票池 4112 只　｜　
+数据源：本地 baostock 后复权日线 52 MB/因子</p>
+
+<div class="card verdict">
+<h2 style="margin-top:0;border:none;padding:0">结论：11 个日度因子的 RankIC <b>全部为负</b>，动量方向在 A 股日频上是反向的</h2>
+<p style="margin:6px 0 0">最强的 <span class="mono">momentum_20</span> IC 均值 -0.0378、t 值 <b>-8.98</b> —— 不是噪声。
+这与回测引擎那边从成交价推出的结论（隔夜跳空 -1.82% / -1.70%）<b>互相独立地印证</b>：
+一条路径从成交价推，一条路径从截面秩相关推。</p>
+<p style="margin:10px 0 0"><b>但"反转"不是平滑的</b> —— 见下面第二张图：
+G1~G4 四组的毛年化几乎一样（+18%~+23%），<b>只有极端动量组 G5 是负的（-8.9%）</b>。
+所以改法<b>不是"把信号取负"</b>（那会把 G1~G4 的优势也做反），而是<b>剔除极端动量组</b>。</p>
+</div>
+
+<h2>一、11 个因子的 IC 与多空收益</h2>
+<div class="card">
+<div class="legend"><span><i class="dot" style="background:#18a058"></i>IC &lt; 0（反向）</span>
+<span><i class="dot" style="background:#d03050"></i>IC &gt; 0（正向）</span>
+<span>中国市场惯例：涨红跌绿</span></div>
+<svg viewBox="0 0 680 320" class="chart"><line x1="379.0" y1="14" x2="379.0" y2="312" stroke="#c9ced6"/><text x="112" y="35" text-anchor="end" class="lbl">20日动量</text><rect x="233.0" y="25" width="146.0" height="13" fill="#18a058" rx="2"/><text x="375.0" y="35" text-anchor="end" class="val">-0.0378</text><text x="112" y="61" text-anchor="end" class="lbl">20日乖离率</text><rect x="228.5" y="51" width="150.5" height="13" fill="#18a058" rx="2"/><text x="375.0" y="61" text-anchor="end" class="val">-0.0389</text><text x="112" y="87" text-anchor="end" class="lbl">近5日累计收益</text><rect x="256.9" y="77" width="122.1" height="13" fill="#18a058" rx="2"/><text x="375.0" y="87" text-anchor="end" class="val">-0.0316</text><text x="112" y="113" text-anchor="end" class="lbl">近3日累计收益</text><rect x="269.8" y="103" width="109.2" height="13" fill="#18a058" rx="2"/><text x="375.0" y="113" text-anchor="end" class="val">-0.0282</text><text x="112" y="139" text-anchor="end" class="lbl">20日最大单日涨幅</text><rect x="186.3" y="129" width="192.7" height="13" fill="#18a058" rx="2"/><text x="375.0" y="139" text-anchor="end" class="val">-0.0498</text><text x="112" y="165" text-anchor="end" class="lbl">当日涨跌幅</text><rect x="285.5" y="155" width="93.5" height="13" fill="#18a058" rx="2"/><text x="375.0" y="165" text-anchor="end" class="val">-0.0242</text><text x="112" y="191" text-anchor="end" class="lbl">近10日累计收益</text><rect x="249.6" y="181" width="129.4" height="13" fill="#18a058" rx="2"/><text x="375.0" y="191" text-anchor="end" class="val">-0.0335</text><text x="112" y="217" text-anchor="end" class="lbl">RSI(14)</text><rect x="256.5" y="207" width="122.5" height="13" fill="#18a058" rx="2"/><text x="375.0" y="217" text-anchor="end" class="val">-0.0317</text><text x="112" y="243" text-anchor="end" class="lbl">20日波动率</text><rect x="187.0" y="233" width="192.0" height="13" fill="#18a058" rx="2"/><text x="375.0" y="243" text-anchor="end" class="val">-0.0496</text><text x="112" y="269" text-anchor="end" class="lbl">近5日平均振幅</text><rect x="152.0" y="259" width="227.0" height="13" fill="#18a058" rx="2"/><text x="375.0" y="269" text-anchor="end" class="val">-0.0587</text><text x="112" y="295" text-anchor="end" class="lbl">20日平均换手率</text><rect x="219.2" y="285" width="159.8" height="13" fill="#18a058" rx="2"/><text x="375.0" y="295" text-anchor="end" class="val">-0.0413</text></svg>
+</div>
+
+<div class="card">
+<table>
+<thead><tr><th>因子</th><th>中文名</th><th>IC 均值</th><th>ICIR</th><th>t 值</th><th>IC 胜率</th>
+<th>单调性</th><th>多空年化(毛)</th><th>年化成本</th><th>多空年化(净)</th></tr></thead>
+<tbody><tr><td class="mono">momentum_20</td><td>20日动量</td><td class="num neg">-0.0378</td><td class="num neg">-0.229</td><td class="num neg">-8.98</td><td class="num">40.9%</td><td class="num">-0.10</td><td class="num neg">-26.9%</td><td class="num warn">10.2%</td><td class="num neg">-37.1%</td></tr><tr><td class="mono">ma_bias_20</td><td>20日乖离率</td><td class="num neg">-0.0389</td><td class="num neg">-0.237</td><td class="num neg">-9.31</td><td class="num">39.8%</td><td class="num">-0.10</td><td class="num neg">-26.7%</td><td class="num warn">11.9%</td><td class="num neg">-38.6%</td></tr><tr><td class="mono">ret_5</td><td>近5日累计收益</td><td class="num neg">-0.0316</td><td class="num neg">-0.200</td><td class="num neg">-7.85</td><td class="num">40.9%</td><td class="num">-0.10</td><td class="num neg">-25.3%</td><td class="num warn">19.6%</td><td class="num neg">-44.9%</td></tr><tr><td class="mono">ret_3</td><td>近3日累计收益</td><td class="num neg">-0.0282</td><td class="num neg">-0.183</td><td class="num neg">-7.17</td><td class="num">40.5%</td><td class="num">-0.30</td><td class="num neg">-24.0%</td><td class="num warn">25.2%</td><td class="num neg">-49.2%</td></tr><tr><td class="mono">max_ret_20</td><td>20日最大单日涨幅</td><td class="num neg">-0.0498</td><td class="num neg">-0.324</td><td class="num neg">-12.69</td><td class="num">37.2%</td><td class="num">-0.70</td><td class="num neg">-24.9%</td><td class="num warn">3.7%</td><td class="num neg">-28.6%</td></tr><tr><td class="mono">today_pct</td><td>当日涨跌幅</td><td class="num neg">-0.0242</td><td class="num neg">-0.172</td><td class="num neg">-6.75</td><td class="num">41.1%</td><td class="num">-0.40</td><td class="num neg">-23.7%</td><td class="num warn">43.6%</td><td class="num neg">-67.3%</td></tr><tr><td class="mono">ret_10</td><td>近10日累计收益</td><td class="num neg">-0.0335</td><td class="num neg">-0.212</td><td class="num neg">-8.30</td><td class="num">40.3%</td><td class="num">-0.10</td><td class="num neg">-23.2%</td><td class="num warn">14.0%</td><td class="num neg">-37.2%</td></tr><tr><td class="mono">rsi_14</td><td>RSI(14)</td><td class="num neg">-0.0317</td><td class="num neg">-0.211</td><td class="num neg">-8.28</td><td class="num">41.9%</td><td class="num">-0.30</td><td class="num neg">-21.1%</td><td class="num warn">13.1%</td><td class="num neg">-34.1%</td></tr><tr><td class="mono">volatility_20</td><td>20日波动率</td><td class="num neg">-0.0496</td><td class="num neg">-0.254</td><td class="num neg">-9.95</td><td class="num">39.6%</td><td class="num">-0.70</td><td class="num neg">-19.7%</td><td class="num warn">3.9%</td><td class="num neg">-23.6%</td></tr><tr><td class="mono">amplitude_5</td><td>近5日平均振幅</td><td class="num neg">-0.0587</td><td class="num neg">-0.312</td><td class="num neg">-12.23</td><td class="num">37.0%</td><td class="num">-0.40</td><td class="num neg">-18.6%</td><td class="num warn">8.3%</td><td class="num neg">-26.9%</td></tr><tr><td class="mono">turnover_20</td><td>20日平均换手率</td><td class="num neg">-0.0413</td><td class="num neg">-0.207</td><td class="num neg">-8.13</td><td class="num">41.6%</td><td class="num">-0.60</td><td class="num neg">-17.4%</td><td class="num warn">1.4%</td><td class="num neg">-18.9%</td></tr></tbody></table>
+<p class="sub" style="margin:12px 0 0">ICIR = IC 均值 / IC 标准差（<b>单期口径</b>，非年化）。多空 = 最高组 − 最低组。
+年化成本按实际换手 × 单次往返成本（0.228%，含佣金/印花税分段/过户费/滑点 5bp）估算。</p>
+</div>
+
+<h2>二、为什么是"G5 崩坏"而不是"整体反转"（以 momentum_20 为例）</h2>
+<div class="card">
+<div class="legend"><span><i class="dot" style="background:#185fa5"></i>毛年化</span>
+<span><i class="dot" style="background:#d97706"></i>扣成本后年化</span></div>
+<svg viewBox="0 0 680 300" class="chart"><line x1="78" y1="134.5" x2="650" y2="134.5" stroke="#8a9099" stroke-dasharray="4 3"/><text x="72" y="138.5" text-anchor="end" class="ax">0%</text><rect x="96" y="66.3" width="34" height="68.2" fill="#185fa5" rx="2"/><text x="113.0" y="62.3" text-anchor="middle" class="barval">18.1%</text><rect x="134" y="107.2" width="34" height="27.3" fill="#d97706" rx="2"/><text x="151.0" y="103.2" text-anchor="middle" class="barval">7.2%</text><text x="132" y="250" text-anchor="middle" class="lbl">G1</text><text x="132" y="266" text-anchor="middle" class="ax">823 只</text><rect x="210" y="58.7" width="34" height="75.8" fill="#185fa5" rx="2"/><text x="227.0" y="54.7" text-anchor="middle" class="barval">20.1%</text><rect x="248" y="134.5" width="34" height="8.2" fill="#d97706" rx="2"/><text x="265.0" y="153.7" text-anchor="middle" class="barval">-2.2%</text><text x="246" y="250" text-anchor="middle" class="lbl">G2</text><text x="246" y="266" text-anchor="middle" class="ax">822 只</text><rect x="324" y="47.4" width="34" height="87.1" fill="#185fa5" rx="2"/><text x="341.0" y="43.4" text-anchor="middle" class="barval">23.0%</text><rect x="362" y="134.5" width="34" height="4.4" fill="#d97706" rx="2"/><text x="379.0" y="149.9" text-anchor="middle" class="barval">-1.2%</text><text x="360" y="250" text-anchor="middle" class="lbl">G3</text><text x="360" y="266" text-anchor="middle" class="ax">822 只</text><rect x="438" y="54.9" width="34" height="79.6" fill="#185fa5" rx="2"/><text x="455.0" y="50.9" text-anchor="middle" class="barval">21.1%</text><rect x="476" y="134.5" width="34" height="0.3" fill="#d97706" rx="2"/><text x="493.0" y="145.8" text-anchor="middle" class="barval">-0.1%</text><text x="474" y="250" text-anchor="middle" class="lbl">G4</text><text x="474" y="266" text-anchor="middle" class="ax">822 只</text><rect x="552" y="134.5" width="34" height="33.5" fill="#185fa5" rx="2"/><text x="569.0" y="179.0" text-anchor="middle" class="barval">-8.9%</text><rect x="590" y="134.5" width="34" height="69.7" fill="#d97706" rx="2"/><text x="607.0" y="215.1" text-anchor="middle" class="barval">-18.4%</text><text x="588" y="250" text-anchor="middle" class="lbl">G5</text><text x="588" y="266" text-anchor="middle" class="ax">822 只</text><text x="96" y="292" class="ax">口径：T 日因子 → T+1 开盘买入 → 持有 1 日后 T+2 开盘卖出；毛收益不含成本</text></svg>
+</div>
+<div class="card">
+<table>
+<thead><tr><th>组</th><th>毛年化</th><th>累计收益</th><th>平均只数</th><th>日均换手</th><th>年化成本</th><th>扣成本年化</th></tr></thead>
+<tbody><tr><td class="num">1</td><td class="num pos">18.1%</td><td class="num pos">134%</td><td class="num">823</td><td class="num">18.9%</td><td class="num warn">10.8%</td><td class="num pos">7.2%</td></tr><tr><td class="num">2</td><td class="num pos">20.1%</td><td class="num pos">180%</td><td class="num">822</td><td class="num">38.7%</td><td class="num warn">22.2%</td><td class="num neg">-2.2%</td></tr><tr><td class="num">3</td><td class="num pos">23.0%</td><td class="num pos">243%</td><td class="num">822</td><td class="num">42.1%</td><td class="num warn">24.2%</td><td class="num neg">-1.2%</td></tr><tr><td class="num">4</td><td class="num pos">21.1%</td><td class="num pos">206%</td><td class="num">822</td><td class="num">36.8%</td><td class="num warn">21.1%</td><td class="num neg">-0.1%</td></tr><tr class=hl><td class="num">5</td><td class="num neg">-8.9%</td><td class="num neg">-53%</td><td class="num">822</td><td class="num">16.7%</td><td class="num warn">9.6%</td><td class="num neg">-18.4%</td></tr></tbody></table>
+<p class="sub" style="margin:12px 0 0">组号越大 = 因子值越大。<b>G5 的反常才是全部结论的来源</b> ——
+只报"最高组 − 最低组"会把结构读成"平滑反转"，那是错的归因。</p>
+</div>
+
+<h2>三、换手成本：第二重伤害</h2>
+<div class="card">
+<svg viewBox="0 0 680 294" class="chart"><text x="112" y="31" text-anchor="end" class="lbl">20日动量</text><rect x="120" y="21" width="88.8" height="13" fill="#b9c6d8" rx="2"/><text x="214.8" y="31" class="val">日换手 18%</text><text x="530" y="31" text-anchor="end" class="val warn">年化成本 10.2%</text><text x="112" y="55" text-anchor="end" class="lbl">20日乖离率</text><rect x="120" y="45" width="103.7" height="13" fill="#b9c6d8" rx="2"/><text x="229.7" y="55" class="val">日换手 21%</text><text x="530" y="55" text-anchor="end" class="val warn">年化成本 11.9%</text><text x="112" y="79" text-anchor="end" class="lbl">近5日累计收益</text><rect x="120" y="69" width="170.8" height="13" fill="#b9c6d8" rx="2"/><text x="296.8" y="79" class="val">日换手 34%</text><text x="530" y="79" text-anchor="end" class="val warn">年化成本 19.6%</text><text x="112" y="103" text-anchor="end" class="lbl">近3日累计收益</text><rect x="120" y="93" width="219.3" height="13" fill="#b9c6d8" rx="2"/><text x="345.3" y="103" class="val">日换手 44%</text><text x="530" y="103" text-anchor="end" class="val warn">年化成本 25.2%</text><text x="112" y="127" text-anchor="end" class="lbl">20日最大单日涨幅</text><rect x="120" y="117" width="32.4" height="13" fill="#b9c6d8" rx="2"/><text x="158.4" y="127" class="val">日换手 6%</text><text x="530" y="127" text-anchor="end" class="val warn">年化成本 3.7%</text><text x="112" y="151" text-anchor="end" class="lbl">当日涨跌幅</text><rect x="120" y="141" width="380.0" height="13" fill="#b9c6d8" rx="2"/><text x="506.0" y="151" class="val">日换手 76%</text><text x="530" y="151" text-anchor="end" class="val warn">年化成本 43.6%</text><text x="112" y="175" text-anchor="end" class="lbl">近10日累计收益</text><rect x="120" y="165" width="122.3" height="13" fill="#b9c6d8" rx="2"/><text x="248.3" y="175" class="val">日换手 24%</text><text x="530" y="175" text-anchor="end" class="val warn">年化成本 14.0%</text><text x="112" y="199" text-anchor="end" class="lbl">RSI(14)</text><rect x="120" y="189" width="113.8" height="13" fill="#b9c6d8" rx="2"/><text x="239.8" y="199" class="val">日换手 23%</text><text x="530" y="199" text-anchor="end" class="val warn">年化成本 13.1%</text><text x="112" y="223" text-anchor="end" class="lbl">20日波动率</text><rect x="120" y="213" width="34.2" height="13" fill="#b9c6d8" rx="2"/><text x="160.2" y="223" class="val">日换手 7%</text><text x="530" y="223" text-anchor="end" class="val warn">年化成本 3.9%</text><text x="112" y="247" text-anchor="end" class="lbl">近5日平均振幅</text><rect x="120" y="237" width="72.7" height="13" fill="#b9c6d8" rx="2"/><text x="198.7" y="247" class="val">日换手 15%</text><text x="530" y="247" text-anchor="end" class="val warn">年化成本 8.3%</text><text x="112" y="271" text-anchor="end" class="lbl">20日平均换手率</text><rect x="120" y="261" width="12.5" height="13" fill="#b9c6d8" rx="2"/><text x="138.5" y="271" class="val">日换手 2%</text><text x="530" y="271" text-anchor="end" class="val warn">年化成本 1.4%</text></svg>
+<p class="sub" style="margin:12px 0 0">用当日涨跌幅选股（<span class="mono">today_pct</span>）日换手高达 76%，
+年化成本 <b>43.6%</b>，比它的毛收益还大。任何日频轮动都要先跨过这条线 ——
+这正是架构风险清单 #18「交易成本侵蚀」的实测兑现。</p>
+</div>
+
+<h2>四、分析口径（数字必须连着口径读）</h2>
+<div class="card"><ul><li>成交时点：T 日因子 → T+1 开盘买入 → 持有 horizon 个交易日 → T+1+horizon 开盘卖出（与回测引擎 fill_rule=next_open 一致）</li><li>股票池：逐日走 tools/universe.build_universe（与回测引擎同一实现），剔除 ST/停牌/上市&lt;90交易日/一字板/科创/北交/B股</li><li>入场可行性：要求 T 日与 T+1 日都在股票池内 —— T+1 不在池子里说明开盘涨停或停牌，根本买不到</li><li>出场可行性：刻意未强制。出场日跌停/停牌时真实交易需顺延，本分析按理论价结算 → 存在轻微乐观偏差</li><li>分组收益为毛收益（不含成本）；另给日均换手率与年化成本估算（印花税按 2023-08-28 分段）</li><li>IC 为逐日截面 RankIC（Spearman）；ICIR = IC 均值 / IC 标准差，是单期口径不是年化口径</li><li>换手率口径：某组「今日成员 △ 昨日成员」÷ 两边成员数之和（等规模时即被替换掉的比例，单边口径）；多空组合的换手取首尾两组换手的平均</li><li>annual_return 是**算术年化**（日均收益 × 252），cum_return 是**累计复利**。波动大时两者差异显著 —— 判断排序质量看 cum_return 与单调性，估算年化水平才看 annual_return</li></ul></div>
+
+<h2>五、下一步建议</h2>
+<div class="card">
+<div class="kv">
+<div>① 扫持有期（信息量最大）<b>python -m factors.analyze --all --horizon 5</b></div>
+<div>② 按 G1~G4 思路改策略<b>剔除极端动量组，不是取负</b></div>
+<div>③ 因子去相关后合成<b>先做相关性矩阵，11 个不是 11 份证据</b></div>
+<div>④ 或推进模块 4/5<b>框架优先级已满足</b></div>
+</div>
+<p class="sub" style="margin:14px 0 0">⚠️ ②属于<b>改策略规则</b>，须先改 <span class="mono">策略规格说明书.md</span> 并升版本，再改
+<span class="mono">strategies/impl/momentum.py</span>。本轮主人已明确"阶段 2 反跑策略先不执行"。</p>
+</div>
+
+</div></body></html>

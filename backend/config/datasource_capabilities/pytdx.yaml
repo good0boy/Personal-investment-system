@@ -1,0 +1,132 @@
+# ============================================================
+# 数据源能力声明 —— pytdx
+# 模块 1「数据源能力矩阵」页面的数据来源。
+#
+# ⚠️⚠️ 本文件【未在本环境实测】⚠️⚠️
+#   以下支持情况依据 pytdx 文档与公开资料整理（2026-09 核对）。
+#   页面会把 verified=false 的数据源整列标灰。
+#
+# 为什么把它列进来：它走的是**通达信二进制协议**，数据来源与
+# akshare/efinance（东财网页）、baostock、tushare 完全不同，
+# 是少数几个能真正分散单点风险的选项。
+# ============================================================
+
+name: "pytdx"
+display_name: "pytdx（通达信协议）"
+role: "备用（独立数据通道）"
+package: "pytdx"
+version_pin: ""
+homepage: "https://github.com/rainx/pytdx"
+license: "开源免费，无需注册"
+
+verified: false
+verified_at: null
+verified_by: null
+verified_note: "未实测。它连接的是第三方公开的通达信行情服务器，**可用性取决于那些服务器是否开放**，这一点必须实测才能确认。"
+
+symbol_format: "600519 | 000001"
+symbol_note: "6 位纯数字 + market 常量（0=深, 1=沪）"
+
+auth:
+  required: false
+  note: "无需账号，但需连上通达信行情服务器（连通性不稳定，需多服务器兜底）"
+
+capabilities:
+  # ---------- 行情 ----------
+  daily_kline:
+    supported: true
+    quality: "good"
+    note: "get_security_bars，日线历史长度取决于服务器，通常可回溯数年"
+    priority: "备选"
+  minute_kline:
+    supported: true
+    quality: "excellent"
+    note: "★ 1/5/15/30/60 分钟均支持，且是原生分笔/分钟通道（非网页解析）"
+    priority: "备选"
+  adjust_factor:
+    supported: true
+    quality: "fair"
+    note: "get_xdxr_info 可取除权除息信息，**需自行计算复权价**，有实现成本"
+    priority: "备选"
+  realtime_quote:
+    supported: true
+    quality: "good"
+    note: "get_security_quotes，含买卖五档盘口"
+    priority: "备选"
+  index_daily:
+    supported: true
+    quality: "good"
+    note: "指数与个股同一套接口，用 market 区分"
+    priority: "备选"
+
+  # ---------- 合规与风控 ----------
+  daily_st_status:
+    supported: false
+    quality: "none"
+    note: "❌ 无 ST 字段。股票名称可从 get_security_list 取，但那是当前名称"
+    priority: "-"
+  halt_status:
+    supported: false
+    quality: "poor"
+    note: "❌ 无停牌字段。停牌股表现为当日无数据，属**推断**而非标记"
+    priority: "-"
+  delisted_history:
+    supported: false
+    quality: "poor"
+    note: "❌ 退市股通常已从服务器列表中移除，历史数据不可靠"
+    priority: "-"
+
+  # ---------- 股票池与日历 ----------
+  historical_index_cons:
+    supported: false
+    quality: "none"
+    note: "❌ 无指数成分股接口"
+    priority: "-"
+  all_stock_list:
+    supported: true
+    quality: "fair"
+    note: "get_security_list 按市场取证券列表（当前状态）"
+    priority: "备选"
+  trade_calendar:
+    supported: false
+    quality: "poor"
+    note: "❌ 无交易日历接口，只能从指数 K 线的日期间接推断"
+    priority: "-"
+
+  # ---------- 基本面 ----------
+  fundamentals:
+    supported: false
+    quality: "poor"
+    note: "❌ get_finance_info 字段极少（股本/每股净资产等），不构成可用的财务数据源"
+    priority: "-"
+  industry_classification:
+    supported: false
+    quality: "poor"
+    note: "❌ 需本地安装通达信客户端读取板块文件，纯 API 方式拿不到"
+    priority: "-"
+
+  # ---------- 板块与资金 ----------
+  sector_board:
+    supported: false
+    quality: "poor"
+    note: "❌ 同上，依赖本地客户端文件"
+    priority: "-"
+  fund_flow:
+    supported: false
+    quality: "none"
+    note: "❌ 无资金流数据"
+    priority: "-"
+  dragon_tiger:
+    supported: false
+    quality: "none"
+    note: "❌ 无龙虎榜数据"
+    priority: "-"
+
+stability:
+  interface_change_risk: "low"
+  note: "协议本身多年稳定，风险不在协议而在**服务器**：公开的行情服务器随时可能关闭或限流。"
+
+pitfalls:
+  - "★ 依赖第三方公开行情服务器，连通性与稳定性不受控 → 必须配置多服务器轮换"
+  - "无 ST/停牌/退市/成分股 → **不能作为本项目回测的主数据源**，只能做实时或分钟线的补充通道"
+  - "复权需自行按除权除息数据计算，容易算错，必须与 baostock 口径交叉验证"

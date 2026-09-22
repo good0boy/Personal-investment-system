@@ -1,0 +1,388 @@
+# ============================================================
+# 模块 1 · 接口目录 —— 基本面
+# ============================================================
+# ★ 本目录是接口定义的唯一人工入口。规则：
+#   - params 的 name 必须是数据源函数签名里真实存在的参数（自检会核对）
+#   - returns 逐列说明应来自**真实调用**（列名抄错比不写更误导）
+#   - returns_verified: true  = 出参列名经本环境真实调用核对
+#               false         = 依据文档整理（本机网络受限未能调通）
+#   - sample_params 是「试跑」按钮实际发送的参数，必须是能跑通的
+# ============================================================
+
+- id: fundamental.stock_individual_info_em
+  name: 个股基本信息
+  sub_category: 个股资料
+  datasource: akshare
+  func_name: stock_individual_info_em
+  description: 东方财富-个股信息：总股本、流通股、行业、上市时间等静态资料
+  symbol_format: plain
+  params:
+    - { name: symbol, type: str, default: "600519", desc: "股票代码（6 位数字）" }
+  returns:
+    - { name: item, type: str, desc: "条目名（总股本/流通股/行业/上市时间等）" }
+    - { name: value, type: str, desc: "条目值" }
+  sample_params: { symbol: "600519" }
+  tags: [个股, 东财]
+  returns_verified: false
+
+- id: fundamental.stock_financial_abstract
+  name: 财务摘要（关键指标）
+  sub_category: 财务指标
+  datasource: akshare
+  func_name: stock_financial_abstract
+  description: 新浪财经-财务报表-关键指标。行为指标（选项列），列为各报告期
+  symbol_format: plain
+  params:
+    - { name: symbol, type: str, default: "600519", desc: "股票代码（6 位数字）" }
+  returns:
+    - { name: 选项, type: str, desc: "指标分组（按报告期/按年度等）" }
+    - { name: 指标, type: str, desc: "指标名（如 归母净利润/营业总收入）" }
+    - { name: "<报告期 YYYYMMDD>", type: float, desc: "各报告期数值，一列一期" }
+  sample_params: { symbol: "600519" }
+  tags: [财务, 新浪, 宽表]
+  returns_verified: true
+  returns_note: "实测 80 行 × 105 列（600519）；列为 2017~2026 各报告期"
+
+- id: fundamental.stock_financial_analysis_indicator_em
+  name: 财务分析主要指标（东财）
+  sub_category: 财务指标
+  datasource: akshare
+  func_name: stock_financial_analysis_indicator_em
+  description: 东方财富-A股-财务分析-主要指标。字段名为东财编码（EPSJB=每股收益基本等），141 列
+  symbol_format: suffix
+  params:
+    - { name: symbol, type: str, default: "600519.SH", desc: "股票代码（带市场后缀，如 600519.SH）" }
+    - { name: indicator, type: str, default: "按报告期", desc: "指标周期", options: ["按报告期", "按单季度"] }
+  returns:
+    - { name: SECURITY_NAME_ABBR, type: str, desc: "证券简称" }
+    - { name: REPORT_DATE, type: str, desc: "报告期" }
+    - { name: NOTICE_DATE, type: str, desc: "公告日期（财务数据对齐用公告日，防未来函数）" }
+    - { name: EPSJB, type: float, desc: "基本每股收益" }
+    - { name: BPS, type: float, desc: "每股净资产" }
+    - { name: ROEJQ, type: float, desc: "净资产收益率（加权）" }
+    - { name: XSMLL, type: float, desc: "销售毛利率" }
+    - { name: TOTALOPERATEREVE, type: float, desc: "营业总收入" }
+    - { name: PARENTNETPROFIT, type: float, desc: "归母净利润" }
+    - { name: "...其余 132 列", type: "-", desc: "完整字段见东财 F10 或试跑结果" }
+  sample_params: { symbol: "600519.SH", indicator: "按报告期" }
+  tags: [财务, 东财, 宽表]
+  returns_verified: true
+  returns_note: "实测 103 行 × 141 列；上表仅列出常用列"
+
+- id: fundamental.stock_balance_sheet_by_report_em
+  name: 资产负债表（按报告期）
+  sub_category: 三大报表
+  datasource: akshare
+  func_name: stock_balance_sheet_by_report_em
+  description: 东方财富-资产负债表-按报告期。字段为标准会计科目编码，319 列
+  symbol_format: sh_prefix
+  params:
+    - { name: symbol, type: str, default: "SH600519", desc: "带市场前缀的代码（SH600519 / SZ000001）" }
+  returns:
+    - { name: SECURITY_NAME_ABBR, type: str, desc: "证券简称" }
+    - { name: REPORT_DATE, type: str, desc: "报告期" }
+    - { name: NOTICE_DATE, type: str, desc: "公告日期" }
+    - { name: MONETARYFUNDS, type: float, desc: "货币资金" }
+    - { name: TOTAL_ASSETS, type: float, desc: "总资产" }
+    - { name: TOTAL_LIABILITIES, type: float, desc: "总负债" }
+    - { name: TOTAL_EQUITY, type: float, desc: "所有者权益" }
+    - { name: "...其余 312 列", type: "-", desc: "完整科目见试跑结果" }
+  sample_params: { symbol: "SH600519" }
+  tags: [财务, 东财, 宽表]
+  returns_verified: true
+  returns_note: "实测 103 期 × 319 列；数据量大，试跑约 4 秒"
+
+- id: fundamental.stock_profit_sheet_by_report_em
+  name: 利润表（按报告期）
+  sub_category: 三大报表
+  datasource: akshare
+  func_name: stock_profit_sheet_by_report_em
+  description: 东方财富-利润表-按报告期，203 列
+  symbol_format: sh_prefix
+  params:
+    - { name: symbol, type: str, default: "SH600519", desc: "带市场前缀的代码" }
+  returns:
+    - { name: REPORT_DATE, type: str, desc: "报告期" }
+    - { name: TOTAL_OPERATE_INCOME, type: float, desc: "营业总收入" }
+    - { name: OPERATE_COST, type: float, desc: "营业成本" }
+    - { name: OPERATE_PROFIT, type: float, desc: "营业利润" }
+    - { name: PARENT_NETPROFIT, type: float, desc: "归母净利润" }
+    - { name: "...其余 198 列", type: "-", desc: "完整科目见试跑结果" }
+  sample_params: { symbol: "SH600519" }
+  tags: [财务, 东财, 宽表]
+  returns_verified: true
+  returns_note: "实测 103 期 × 203 列"
+
+- id: fundamental.stock_cash_flow_sheet_by_report_em
+  name: 现金流量表（按报告期）
+  sub_category: 三大报表
+  datasource: akshare
+  func_name: stock_cash_flow_sheet_by_report_em
+  description: 东方财富-现金流量表-按报告期，254 列
+  symbol_format: sh_prefix
+  params:
+    - { name: symbol, type: str, default: "SH600519", desc: "带市场前缀的代码" }
+  returns:
+    - { name: REPORT_DATE, type: str, desc: "报告期" }
+    - { name: NETCASH_OPERATE, type: float, desc: "经营活动现金流净额" }
+    - { name: NETCASH_INVEST, type: float, desc: "投资活动现金流净额" }
+    - { name: NETCASH_FINANCE, type: float, desc: "筹资活动现金流净额" }
+    - { name: "...其余 250 列", type: "-", desc: "完整科目见试跑结果" }
+  sample_params: { symbol: "SH600519" }
+  tags: [财务, 东财, 宽表]
+  returns_verified: true
+  returns_note: "实测 99 期 × 254 列"
+
+- id: fundamental.stock_yjbb_em
+  name: 业绩报表（全市场）
+  sub_category: 业绩
+  datasource: akshare
+  func_name: stock_yjbb_em
+  description: 东方财富-数据中心-业绩报表。一次返回指定报告期**全市场**的业绩，适合做截面筛选
+  params:
+    - { name: date, type: str, default: "20240331", desc: "报告期（YYYYMMDD，如 20240331/20240630/20240930/20241231）" }
+  returns:
+    - { name: 股票代码, type: str, desc: "6 位代码" }
+    - { name: 股票简称, type: str, desc: "简称" }
+    - { name: 每股收益, type: float, desc: "EPS" }
+    - { name: 营业总收入-营业总收入, type: float, desc: "营业总收入" }
+    - { name: 营业总收入-同比增长, type: float, desc: "营收同比 %" }
+    - { name: 净利润-净利润, type: float, desc: "净利润" }
+    - { name: 净利润-同比增长, type: float, desc: "净利同比 %" }
+    - { name: 净资产收益率, type: float, desc: "ROE %" }
+    - { name: 销售毛利率, type: float, desc: "毛利率 %" }
+    - { name: 所处行业, type: str, desc: "所属行业" }
+    - { name: 最新公告日期, type: str, desc: "公告日期" }
+  sample_params: { date: "20240331" }
+  tags: [财务, 东财, 全市场]
+  returns_verified: true
+  returns_note: "实测 5896 行 × 16 列（2024Q1）"
+
+- id: fundamental.stock_yjyg_em
+  name: 业绩预告（全市场）
+  sub_category: 业绩
+  datasource: akshare
+  func_name: stock_yjyg_em
+  description: 东方财富-数据中心-业绩预告，含预告类型与变动原因
+  params:
+    - { name: date, type: str, default: "20240331", desc: "报告期（YYYYMMDD）" }
+  returns:
+    - { name: 股票代码, type: str, desc: "6 位代码" }
+    - { name: 预测指标, type: str, desc: "如 净利润" }
+    - { name: 业绩变动, type: str, desc: "如 预增/预减/扭亏" }
+    - { name: 预测数值, type: float, desc: "预测值" }
+    - { name: 业绩变动幅度, type: float, desc: "变动幅度 %" }
+    - { name: 业绩变动原因, type: str, desc: "原因说明" }
+    - { name: 预告类型, type: str, desc: "预告类型" }
+    - { name: 公告日期, type: str, desc: "公告日期" }
+  sample_params: { date: "20240331" }
+  tags: [财务, 东财, 全市场]
+  returns_verified: true
+  returns_note: "实测 628 行 × 11 列（2024Q1）"
+
+- id: fundamental.stock_zygc_em
+  name: 主营构成
+  sub_category: 个股资料
+  datasource: akshare
+  func_name: stock_zygc_em
+  description: 东方财富-个股-主营构成（按行业/产品/地区拆分收入成本）
+  symbol_format: sh_prefix
+  params:
+    - { name: symbol, type: str, default: "SH600519", desc: "带市场前缀的代码" }
+  returns:
+    - { name: 股票代码, type: str, desc: "代码" }
+    - { name: 报告日期, type: str, desc: "报告期" }
+    - { name: 分类类型, type: str, desc: "按行业分/按产品分/按地区分" }
+    - { name: 主营构成, type: str, desc: "分类名" }
+    - { name: 主营收入, type: float, desc: "收入" }
+    - { name: 收入比例, type: float, desc: "收入占比" }
+    - { name: 主营成本, type: float, desc: "成本" }
+    - { name: 毛利率, type: float, desc: "毛利率" }
+  sample_params: { symbol: "SH600519" }
+  tags: [财务, 东财]
+  returns_verified: true
+  returns_note: "实测 200 行 × 11 列"
+
+- id: fundamental.stock_zh_a_gdhs
+  name: 股东户数（全市场）
+  sub_category: 股东与股本
+  datasource: akshare
+  func_name: stock_zh_a_gdhs
+  description: 东方财富-数据中心-股东户数。⚠️ 入参是报告期日期不是股票代码（5 种代码格式的坑之一）
+  symbol_format: report_period
+  params:
+    - { name: symbol, type: str, default: "20230930", desc: "「最新」或季度末日期（YYYYMMDD）", options: ["最新", "20230930"] }
+  returns:
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 股东户数-本次, type: int, desc: "本期户数" }
+    - { name: 股东户数-上次, type: int, desc: "上期户数" }
+    - { name: 股东户数-增减, type: int, desc: "增减数" }
+    - { name: 股东户数-增减比例, type: float, desc: "增减 %" }
+    - { name: 户均持股市值, type: float, desc: "户均市值（元）" }
+    - { name: 公告日期, type: str, desc: "公告日期" }
+  sample_params: { symbol: "20230930" }
+  tags: [股东, 东财, 全市场]
+  returns_verified: true
+  returns_note: "实测 5063 行 × 16 列"
+
+- id: fundamental.stock_gdfx_free_top_10_em
+  name: 十大流通股东
+  sub_category: 股东与股本
+  datasource: akshare
+  func_name: stock_gdfx_free_top_10_em
+  description: 东方财富-个股-十大流通股东
+  symbol_format: lower_prefix
+  params:
+    - { name: symbol, type: str, default: "sh600519", desc: "带小写市场前缀（sh600519）" }
+    - { name: date, type: str, default: "20240930", desc: "报告期（YYYYMMDD）" }
+  returns:
+    - { name: 名次, type: int, desc: "名次" }
+    - { name: 股东名称, type: str, desc: "股东名" }
+    - { name: 股东性质, type: str, desc: "如 基金/QFII/个人" }
+    - { name: 股份类型, type: str, desc: "如 流通A股" }
+    - { name: 持股数, type: int, desc: "持股数（股）" }
+    - { name: 占总流通股本持股比例, type: float, desc: "占比 %" }
+    - { name: 增减, type: str, desc: "增减（新进/不变/-N）" }
+    - { name: 变动比率, type: float, desc: "变动比率" }
+  sample_params: { symbol: "sh600519", date: "20230930" }
+  tags: [股东, 东财]
+  returns_verified: true
+  returns_note: "实测 10 行 × 8 列"
+
+- id: fundamental.stock_zh_a_gbjg_em
+  name: 股本结构
+  sub_category: 股东与股本
+  datasource: akshare
+  func_name: stock_zh_a_gbjg_em
+  description: 东方财富-A股数据-股本结构（总股本/流通股的历史变更）
+  symbol_format: suffix
+  params:
+    - { name: symbol, type: str, default: "600519.SH", desc: "带市场后缀（600519.SH）" }
+  returns:
+    - { name: 变更日期, type: str, desc: "变更日期" }
+    - { name: 总股本, type: int, desc: "总股本（股）" }
+    - { name: 已流通股份, type: int, desc: "已流通股份" }
+    - { name: 已上市流通A股, type: int, desc: "流通 A 股" }
+    - { name: 变动原因, type: str, desc: "如 送股/增发" }
+  sample_params: { symbol: "600519.SH" }
+  tags: [股本, 东财]
+  returns_verified: true
+  returns_note: "实测 16 行 × 9 列"
+
+- id: fundamental.stock_report_fund_hold
+  name: 基金持仓（全市场）
+  sub_category: 机构持仓
+  datasource: akshare
+  func_name: stock_report_fund_hold
+  description: 东方财富-数据中心-主力数据-基金持仓（按机构类型 × 报告期）
+  params:
+    - { name: symbol, type: str, default: "基金持仓", desc: "机构类型", options: ["基金持仓", "QFII持仓", "社保持仓", "券商持仓", "保险持仓", "信托持仓"] }
+    - { name: date, type: str, default: "20230930", desc: "报告期（YYYYMMDD）" }
+  returns:
+    - { name: 股票代码, type: str, desc: "6 位代码" }
+    - { name: 股票简称, type: str, desc: "简称" }
+    - { name: 持有基金家数, type: str, desc: "家数" }
+    - { name: 持股总数, type: int, desc: "持股数（股）" }
+    - { name: 持股市值, type: int, desc: "市值（元）" }
+    - { name: 持股变化, type: str, desc: "如 新进/增加" }
+    - { name: 持股变动数值, type: str, desc: "变动数" }
+  sample_params: { symbol: "基金持仓", date: "20230930" }
+  tags: [机构, 东财, 全市场]
+  returns_verified: true
+  returns_note: "实测 3699 行 × 9 列"
+
+- id: fundamental.stock_zh_valuation_baidu
+  name: 个股估值（PE/PB/市值）
+  sub_category: 估值
+  datasource: akshare
+  func_name: stock_zh_valuation_baidu
+  description: 百度股市通-估值数据。★ 替代已移除的 stock_a_indicator_lg（1.18.94 实测确认）
+  symbol_format: plain
+  params:
+    - { name: symbol, type: str, default: "002044", desc: "股票代码（6 位数字）" }
+    - { name: indicator, type: str, default: "总市值", desc: "估值指标", options: ["总市值", "市盈率(TTM)", "市盈率(静)", "市净率", "市现率"] }
+    - { name: period, type: str, default: "近一年", desc: "时间跨度", options: ["近一年", "近三年", "近五年", "近十年", "全部"] }
+  returns:
+    - { name: date, type: str, desc: "日期" }
+    - { name: value, type: float, desc: "指标值" }
+  sample_params: { symbol: "002044", indicator: "总市值", period: "近一年" }
+  tags: [估值, 百度]
+  returns_verified: true
+  returns_note: "实测 365 行 × 2 列"
+
+- id: fundamental.stock_fhps_em
+  name: 分红送配（全市场）
+  sub_category: 分红
+  datasource: akshare
+  func_name: stock_fhps_em
+  description: 东方财富-数据中心-分红送配。⚠️ 入参是报告期日期不是股票代码
+  params:
+    - { name: date, type: str, default: "20231231", desc: "报告期（YYYYMMDD）" }
+  returns:
+    - { name: 代码, type: str, desc: "6 位代码" }
+    - { name: 名称, type: str, desc: "简称" }
+    - { name: 送转股份-送转总比例, type: float, desc: "每 10 股送转合计" }
+    - { name: 现金分红-现金分红比例, type: float, desc: "每 10 股派息（元）" }
+    - { name: 现金分红-股息率, type: float, desc: "股息率 %" }
+    - { name: 预案公告日, type: str, desc: "预案公告日" }
+    - { name: 除权除息日, type: str, desc: "除权除息日" }
+    - { name: 方案进度, type: str, desc: "如 决案/实施" }
+  sample_params: { date: "20231231" }
+  tags: [分红, 东财, 全市场]
+  returns_verified: true
+  returns_note: "实测 3855 行 × 18 列"
+
+- id: fundamental.stock_dividend_cninfo
+  name: 历史分红（个股）
+  sub_category: 分红
+  datasource: akshare
+  func_name: stock_dividend_cninfo
+  description: 巨潮资讯-个股-历史分红实施明细
+  symbol_format: plain
+  params:
+    - { name: symbol, type: str, default: "600519", desc: "股票代码（6 位数字）" }
+  returns:
+    - { name: 实施方案公告日期, type: str, desc: "公告日期" }
+    - { name: 分红类型, type: str, desc: "如 送股/派息" }
+    - { name: 送股比例, type: float, desc: "送股比例" }
+    - { name: 派息比例, type: float, desc: "派息比例" }
+    - { name: 股权登记日, type: str, desc: "登记日" }
+    - { name: 除权日, type: str, desc: "除权日" }
+  sample_params: { symbol: "600519" }
+  tags: [分红, 巨潮]
+  returns_verified: true
+  returns_note: "实测 31 行 × 11 列（贵州茅台全部历史分红）"
+
+- id: fundamental.bs_fetch_stock_industry
+  name: 证监会行业分类（baostock）
+  sub_category: 行业分类
+  datasource: baostock
+  func_name: fetch_stock_industry
+  description: baostock query_stock_industry。证监会行业标准分类，全市场 5553 条。行业字段内部用这个，不用东财的概念板块
+  params: []
+  returns:
+    - { name: code, type: str, desc: "内部代码（sh.600519）" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: industry, type: str, desc: "证监会行业" }
+  sample_params: {}
+  tags: [行业, baostock, 主源]
+  returns_verified: true
+  returns_note: "实测 5553 行 × 3 列；数据量大，试跑约 28 秒"
+
+- id: fundamental.bs_fetch_all_stock
+  name: 全部证券列表（baostock）
+  sub_category: 股票名单
+  datasource: baostock
+  func_name: fetch_all_stock
+  description: baostock query_all_stock。★ 唯一能按**历史日期**查证券列表的源。⚠️ name 是当前名称而非历史名称，不能用于重建历史 ST
+  params:
+    - { name: day, type: str, required: false, default: "", desc: "交易日（YYYY-MM-DD，留空=最近交易日）" }
+  returns:
+    - { name: code, type: str, desc: "内部代码（sh.600519）" }
+    - { name: name, type: str, desc: "⚠️ 当前名称（非历史名称）" }
+    - { name: trade_status, type: int, desc: "交易状态（1=交易 0=停牌）" }
+  sample_params: { day: "2024-01-02" }
+  tags: [名单, baostock, 主源]
+  returns_verified: true
+  returns_note: "实测 5638 行 × 3 列；首次登录+查询约 10 秒"

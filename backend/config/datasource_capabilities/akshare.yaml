@@ -1,0 +1,147 @@
+# ============================================================
+# 数据源能力声明 —— AKShare
+# 模块 1「数据源能力矩阵」页面的数据来源。
+# ============================================================
+
+name: "akshare"
+display_name: "AKShare"
+role: "广度补充源"
+package: "akshare"
+version_pin: "1.18.94"
+homepage: "https://akshare.akfamily.xyz/data/stock/stock.html"
+license: "免费，无需注册"
+
+# ★ 实测标记：true = 本环境真实调用验证过
+verified: true
+verified_at: "2026-09-16"
+verified_by: "旺财（隔离环境实测，akshare 1.18.94）"
+verified_note: null
+measured_function_count:
+  total: 1083
+  stock_: 403
+  index_: 78
+  fund_: 74
+  tool_: 1
+
+# 代码格式 —— 实测共 5 种，这是最容易踩的坑
+symbol_format: "不统一，实测共 5 种"
+symbol_formats:
+  plain:
+    example: "600519"
+    interfaces: ["stock_zh_a_hist", "stock_zh_a_hist_min_em", "stock_zh_a_spot_em", "stock_individual_info_em"]
+  prefix:
+    example: "SZ000895"
+    interfaces: ["stock_zh_valuation_comparison_em"]
+  suffix:
+    example: "301389.SZ"
+    interfaces: ["stock_financial_analysis_indicator_em"]
+  report_period:
+    example: "20230930"
+    note: "★ 入参是报告期日期，不是股票代码"
+    interfaces: ["stock_zh_a_gdhs", "stock_fhps_em", "stock_yjkb_em"]
+  chinese_name:
+    example: "上证A股"
+    interfaces: ["stock_a_gxl_lg", "stock_market_pe_lg"]
+symbol_note: "调用前必须按接口声明的 symbol_format 转换，见 services/data_source/symbols.py"
+
+# 会话
+auth:
+  required: false
+  note: "无需登录"
+
+# 能力矩阵
+capabilities:
+  daily_kline:
+    supported: true
+    quality: "good"
+    note: "stock_zh_a_hist，支持 qfq/hfq。⚠️ 无 isST/tradestatus 字段"
+    priority: "备选"
+  minute_kline:
+    supported: true
+    quality: "good"
+    note: "stock_zh_a_hist_min_em，支持 1/5/15/30/60 分钟"
+    priority: "主用（分钟级）"
+  adjust_factor:
+    supported: true
+    quality: "good"
+    note: "stock_zh_a_hist 的 adjust 参数"
+    priority: "备选"
+  realtime_quote:
+    supported: true
+    quality: "excellent"
+    note: "★ stock_zh_a_spot_em() 无参，一次拿全市场 5000+ 只"
+    priority: "唯一来源"
+  daily_st_status:
+    supported: false
+    quality: "none"
+    note: "❌ 只有当前 ST 列表 stock_zh_a_st_em，无历史逐日状态"
+    priority: "-"
+  halt_status:
+    supported: false
+    quality: "poor"
+    note: "❌ 无停牌字段，只能靠成交量推断（不可靠）"
+    priority: "-"
+  delisted_history:
+    supported: true
+    quality: "fair"
+    note: "部分退市股可取，稳定性一般"
+    priority: "备选"
+  historical_index_cons:
+    supported: false
+    quality: "none"
+    note: "❌ index_stock_cons_* 三个接口均不接受日期参数，只能拿当前成分"
+    priority: "-"
+  all_stock_list:
+    supported: true
+    quality: "fair"
+    note: "stock_zh_a_spot_em 可拿当前全市场，无历史"
+    priority: "备选"
+  trade_calendar:
+    supported: true
+    quality: "excellent"
+    note: "tool_trade_date_hist_sina() 实测 8797 行（1990-12-19 ~ 2026-12-31）"
+    priority: "备选"
+  index_daily:
+    supported: true
+    quality: "good"
+    note: "index_zh_a_hist（入参为 6 位纯数字）"
+    priority: "备选"
+  fundamentals:
+    supported: true
+    quality: "excellent"
+    note: "★ 1083 个接口的广度在这里体现：财务报表/财务指标/股东/分红/主营构成/盈利预测"
+    priority: "主用"
+  industry_classification:
+    supported: true
+    quality: "good"
+    note: "stock_board_industry_name_em 等"
+    priority: "备选"
+  sector_board:
+    supported: true
+    quality: "excellent"
+    note: "★ 行业/概念板块列表与行情"
+    priority: "主用"
+  fund_flow:
+    supported: true
+    quality: "excellent"
+    note: "★ stock_individual_fund_flow 个股资金流"
+    priority: "主用"
+  dragon_tiger:
+    supported: true
+    quality: "excellent"
+    note: "★ stock_lhb_detail_em 龙虎榜"
+    priority: "主用"
+
+# 稳定性评估
+stability:
+  interface_change_risk: "high"
+  note: "★ 版本间常有 breaking change。实测已发现 stock_a_indicator_lg 被移除。必须锁版本 + 启动自检。"
+
+# 已知坑
+pitfalls:
+  - "★ 股票代码格式共 5 种，没有统一约定（见 symbol_formats）"
+  - "stock_zh_a_hist 日期格式 YYYYMMDD，但 stock_zh_a_hist_min_em 是 'YYYY-MM-DD HH:MM:SS'"
+  - "stock_a_indicator_lg 已在 1.18.94 移除 → 个股估值改用 stock_zh_valuation_baidu"
+  - "index_stock_cons_* 系列不接受日期参数，拿不到历史成分股"
+  - "stock_zh_a_hist 返回的成交量单位是【手】，与 baostock 的【股】不同（本项目的 akshare_client 已统一处理）"
+  - "pip 默认会装 pandas 3.0，需显式约束 pandas>=2.2,<3.0"

@@ -1,0 +1,360 @@
+# ============================================================
+# 模块 2 · 因子注册表 —— ★ 因子【定义】的唯一来源
+# ============================================================
+# 职责边界（与模块 1 的 config/catalog/*.yaml 同一条纪律）：
+#   · 本文件 = 因子的【定义】（名称/类别/方向/参数/实现路径）—— 人工维护，可 diff
+#   · 产物文件 data/factor/{category}/{name}.parquet + data/factor/_manifest.json
+#     = 因子的【状态】（是否算过、多少行、覆盖到哪天）
+#   · **不写数据库**。原 `factor_registry` 表已删除（它会把定义存第二份 → 双份真相）。
+#
+# 新增一个因子只需要：写一个函数 + 在下面加一段。**不用改任何服务/接口代码。**
+#
+# 实现契约（factors/loader.py 会强制校验）：
+#   def fn(q: pd.DataFrame, **params) -> pd.Series
+#     · q    —— 长表，列 [date, symbol, close, high, low, preclose, open,
+#               pct_chg, turn, volume, amount]，**已按 [symbol, date] 排序**，
+#               且已剔除停牌行（trade_status != 1）与无效价格行。
+#     · 返回 —— 与 q.index **对齐**的 Series（长度必须相等，允许 NaN）。
+#     · 参数 —— 只接受本文件 params 里声明的键；loader 会比对签名。
+#
+# ★ 数据来源可以是**别处**（2026-09-22 起）：
+#   daily 类因子的数据从 `q` 里来；fundamental 类因子的数据**不在 q 里**，
+#   由实现自己经 `data_store.read_fundamental()` 读取（文件 IO 仍然只走 data_store）。
+#   这类实现必须自己承担**按公告日 as-of 对齐**的责任 —— 见
+#   factors/impl/fundamental.py 的模块 docstring，那是本项目最危险的静默失效来源。
+# ============================================================
+
+version: 1
+
+# ------------------------------------------------------------
+# 分类元数据（供前端展示；不在这里 = 该分类下的因子不会被展示）
+# ------------------------------------------------------------
+# status 语义：
+#   ready    —— 可计算，本次已实现
+#   planned  —— 框架已留，未实现（UI 标注"待开发"）
+#   blocked  —— 依赖的数据源本地没有，无法计算（UI 标注原因，不假装能算）
+categories:
+  - key: daily
+    cname: 日度行情因子
+    status: ready
+    desc: "由日线行情派生；数据源 data/raw/quote_daily/（后复权）。"
+  - key: combo
+    cname: 合成因子
+    status: ready
+    desc: "由**已算好的**其他因子按逐日截面秩合成；数据源 data/factor/。"
+    note: >
+      动机：秩相关矩阵实测 11 个日度因子只坍缩成约 3 个独立信息维度
+      （动量簇 / 活跃度簇 / today_pct），继续加同族因子是重复计数，
+      跨簇合成才可能有信息增量（研究文档 §3.2）。
+      ⚠️ 前置条件：**组件因子必须已算过，且与本因子用同一区间**
+      （合成是对 (date, symbol) 逐行对齐的，区间不一致会显式报错，
+      命令见报错信息）。合成口径见 factors/impl/combo.py 的模块 docstring。
+  - key: minute
+    cname: 分钟级因子
+    status: planned
+    desc: "由 5/15/30 分钟线派生。"
+    note: >
+      不做全量落库 —— 全市场 5 分钟线一年约 60 亿行，单机扛不住也没必要。
+      只做「按需拉取 + 内存计算 + 结果落盘」，用 stock_zh_a_hist_min_em 拉取时
+      须加 0.3~0.5s 间隔（见 技术架构 §6.2）。
+  - key: fundamental
+    cname: 基本面因子
+    status: ready
+    desc: "由财务指标派生；数据源 data/raw/fundamental/financial_indicator/（4,791 只 / 31.8 万条）。"
+    note: >
+      ✅ 2026-09-22 启用（此前标 blocked，理由是"本地没有财务数据"—— 该理由已过时：
+      全市场历史财务（三大报表 + 财务指标 + 4 个全市场批量集，共 2.1 GB）早已回补落盘）。
+      关键防线：**按公告日 NOTICE_DATE 做 as-of 对齐，不是按报告期** ——
+      2024-12-31 的报表要到 2025-03 才公告，按报告期对齐等于让回测"看到"未来，
+      而这种错误**不会报错，只会让 IC 虚高**。口径细节见 factors/impl/fundamental.py。
+      尚未接入：估值类（PE/PB，盘上无股本/市值数据集）、批量类数据集（yjbb 业绩报表等）。
+
+# ------------------------------------------------------------
+# 因子清单
+# ------------------------------------------------------------
+# 字段说明（loader 会逐项校验，写错会在 --check 时标红）：
+#   name      因子标识；唯一；snake_case；同时是产物文件名
+#   cname     中文名（前端展示）
+#   category  daily | minute | fundamental
+#   direction 取值方向的**先验假设**：1 越大越好 / -1 越小越好 / 0 中性（无先验）
+#             ⚠️ 这是假设不是结论 —— 真假由 analysis 的 IC 与分层结果给证据。
+#                本项目 2026-09 的教训正是"看起来很合理的假设被实测推翻"。
+#   impl      实现路径，格式 <模块>.<函数>
+#   params    传给实现的参数（与函数签名比对）
+#   data_deps 依赖的原始数据（文档性；当前统一 quote_daily）
+#   tags      便于分组筛选的标签
+#   unit      ★ 量纲说明（前端画图时直接标在坐标轴上）
+#             —— 集中在这里定义，不许在前端或服务层按因子名 if-else 硬编码，
+#                否则"换手率到底是 0.015 还是 1.5"这种事故迟早发生。
+#   desc      口径的**精确定义**（含复权口径、单位、边界），别写含糊话
+# ------------------------------------------------------------
+factors:
+
+  # ---------- 一、策略入场条件的原子化 ----------
+  # 动机：策略规格 v1.2 的入场三闸门是「今日涨幅∈(1%,5%) + 近3/10/20日累计>5%
+  #       + 按近5日振幅降序」。把每一项拆成因子单独看 IC，
+  #       就能回答"为什么追强势股赚不到隔夜的钱"（见 开发进度 §2.5）。
+  - name: today_pct
+    cname: 当日涨跌幅
+    category: daily
+    direction: 0
+    impl: factors.impl.daily.today_pct
+    params: {}
+    data_deps: [quote_daily]
+    tags: [策略闸门]
+    unit: "小数（0.05 = 5%）"
+    desc: "当日 pct_chg / 100，小数。策略入场条件①的原子（原口径要求 ∈ (1%, 5%)）。"
+
+  - name: ret_3
+    cname: 近3日累计收益
+    category: daily
+    direction: 1
+    impl: factors.impl.daily.ret_n
+    params: {window: 3}
+    data_deps: [quote_daily]
+    tags: [策略闸门, 动量]
+    unit: "小数（0.05 = 5%）"
+    desc: "close / close[t-3] − 1（后复权价，3 个交易日）。策略入场条件②之一。"
+
+  - name: ret_10
+    cname: 近10日累计收益
+    category: daily
+    direction: 1
+    impl: factors.impl.daily.ret_n
+    params: {window: 10}
+    data_deps: [quote_daily]
+    tags: [策略闸门, 动量]
+    unit: "小数（0.05 = 5%）"
+    desc: "close / close[t-10] − 1（后复权价，10 个交易日）。策略入场条件②之一。"
+
+  - name: momentum_20
+    cname: 20日动量
+    category: daily
+    direction: 1
+    impl: factors.impl.daily.ret_n
+    params: {window: 20}
+    data_deps: [quote_daily]
+    tags: [策略闸门, 动量, 经典]
+    unit: "小数（0.05 = 5%）"
+    desc: "close / close[t-20] − 1（后复权价，20 个交易日）。策略入场条件②之一，也是经典动量因子。"
+
+  - name: amplitude_5
+    cname: 近5日平均振幅
+    category: daily
+    direction: 0
+    impl: factors.impl.daily.amplitude_mean
+    params: {window: 5}
+    data_deps: [quote_daily]
+    tags: [策略闸门]
+    unit: "小数（0.05 = 5%）"
+    desc: "(high − low) / preclose 的 5 日均值，小数。策略选股的**排序键**（原口径降序取前 5）。"
+
+  # ---------- 二、验证"短期反转"假说 ----------
+  # 背景：策略入场后隔夜跳空 −1.82%/−1.70%（76% 低开），两段区间高度一致，
+  #       指向 A 股散户主导市场的短期反转效应。ret_5 中性无先验，就是用来验它的。
+  - name: ret_5
+    cname: 近5日累计收益
+    category: daily
+    direction: 0
+    impl: factors.impl.daily.ret_n
+    params: {window: 5}
+    data_deps: [quote_daily]
+    tags: [反转检验]
+    unit: "小数（0.05 = 5%）"
+    desc: "close / close[t-5] − 1。**刻意标 direction=0** —— 反转还是延续正是待检验的问题，不预设方向。"
+
+  - name: max_ret_20
+    cname: 20日最大单日涨幅
+    category: daily
+    direction: 0
+    impl: factors.impl.daily.max_daily_ret
+    params: {window: 20}
+    data_deps: [quote_daily]
+    tags: [反转检验]
+    unit: "小数（0.05 = 5%）"
+    desc: "近 20 个交易日单日涨幅的最大值（小数）。刻画『是否有过涨停式脉冲』，与短期反转强相关。"
+
+  # ---------- 三、经典对照因子 ----------
+  - name: volatility_20
+    cname: 20日波动率
+    category: daily
+    direction: -1
+    impl: factors.impl.daily.volatility
+    params: {window: 20}
+    data_deps: [quote_daily]
+    tags: [经典, 风险]
+    unit: "小数（0.02 = 2%）"
+    desc: "近 20 日【日收益率】的样本标准差（ddof=1）。日收益率取 pct_chg/100，故单位是小数。低波动异象假设越大越好 → direction=−1。"
+
+  - name: turnover_20
+    cname: 20日平均换手率
+    category: daily
+    direction: 0
+    impl: factors.impl.daily.turnover_mean
+    params: {window: 20}
+    data_deps: [quote_daily]
+    tags: [经典, 流动性]
+    unit: "%（百分数，全市场均值约 1~3）"
+    desc: "baostock turn 字段（已是百分数）的近 20 日均值。单位：% 。注意全市场平均值约 1~3，不是 0.01~0.03。"
+
+  - name: ma_bias_20
+    cname: 20日乖离率
+    category: daily
+    direction: -1
+    impl: factors.impl.daily.ma_bias
+    params: {window: 20}
+    data_deps: [quote_daily]
+    tags: [经典, 反转检验]
+    unit: "小数（0.05 = 5%）"
+    desc: "close / MA20 − 1（后复权）。衡量偏离均线的程度；过高 → 均值回复假设下看跌，故 direction=−1。"
+
+  - name: rsi_14
+    cname: RSI(14)
+    category: daily
+    direction: 0
+    impl: factors.impl.daily.rsi
+    params: {window: 14}
+    data_deps: [quote_daily]
+    tags: [经典]
+    unit: "0~100（无量纲）"
+    desc: "RSI(14)，SMA 口径（非 Wilder 平滑）：avg_gain/(avg_gain+avg_loss)×100，取值 0~100。窗口内 avg_loss=0 时定义为 100。"
+
+  # ---------- 四、基本面因子（category: fundamental，2026-09-22 启用）----------
+  # 数据源：data/raw/fundamental/financial_indicator/{symbol}.parquet（东财财务指标，81 列）
+  # 全部 6 个因子共用 **同一个实现** `factors.impl.fundamental.fin_value`，
+  # 差别只在 params 里的 `field`（用哪一列）与 `annualize`（要不要年度化）。
+  # 这是刻意的：口径差异由 YAML 声明，而不是复制出 6 个几乎一样的函数。
+  #
+  # 对齐口径（三个因子共享，写在实现里）：每个交易日的值 = 该标的**截止当日已公告**
+  # 的最新一期财务值（notice_date <= 交易日）。⚠️ 报表按报告期组织、按公告日公开，
+  # 按报告期对齐会让回测读到尚未公开的业绩 —— 不报错，但 IC 会虚高。
+  #
+  # annualize 取值的判据（**别照抄**）：比率若分子是"年内累计"的流量、分母是存量
+  # （ROE / ROA），不同报告期不可直接横截面比较 → 要年度化（×4/已过季度数，是近似）；
+  # 分子分母同期的纯比率（毛利率 / 净利率 / 资产负债率）与本身就是"同比率"的增速
+  # 字段 → **不要**年度化，乘了反而错。
+  - name: roe_annualized
+    cname: 加权ROE（年度化）
+    category: fundamental
+    direction: 1
+    impl: factors.impl.fundamental.fin_value
+    params: {field: ROEJQ, annualize: true}
+    data_deps: [fundamental]
+    tags: [基本面, 盈利能力, 质量]
+    unit: "%（百分数，已年度化）"
+    desc: >
+      东财 ROEJQ（加权净资产收益率）按公告日 as-of 对齐后 **× 4/已过季度数** 年度化，单位 %。
+      为什么要年度化：ROEJQ 是**年内累计**口径（一季报=1 个季度、年报=全年），
+      不年化就等于拿"刚出一季报的公司"和"刚出年报的公司"直接比，口径不齐。
+      ⚠️ 年度化是**近似**（等比分摊假设）：茅台 2024Q1 ROE 10.57% ×4 = 42.3%，实际全年 36.02%。
+      经典质量因子先验为正；本项目的实测结论以 analysis 的 IC 为准。
+  - name: roa_annualized
+    cname: 总资产净利率（年度化）
+    category: fundamental
+    direction: 1
+    impl: factors.impl.fundamental.fin_value
+    params: {field: ZZCJLL, annualize: true}
+    data_deps: [fundamental]
+    tags: [基本面, 盈利能力]
+    unit: "%（百分数，已年度化）"
+    desc: >
+      东财 ZZCJLL（总资产净利率）按公告日 as-of 对齐后年度化，单位 %。
+      与 ROE 的区别是**不含杠杆**（分母是总资产而非净资产）——
+      两者同时看可以区分"赚钱能力强"与"只是杠杆高"。
+  - name: gross_margin
+    cname: 销售毛利率
+    category: fundamental
+    direction: 1
+    impl: factors.impl.fundamental.fin_value
+    params: {field: XSMLL, annualize: false}
+    data_deps: [fundamental]
+    tags: [基本面, 盈利能力, 护城河]
+    unit: "%（百分数）"
+    desc: >
+      东财 XSMLL（销售毛利率 = 毛利润/营业总收入），按公告日 as-of 对齐，单位 %。
+      **不年度化** —— 分子分母是同一期间的流量，本身就是可比比率。
+      ⚠️ 行业异质性极大（白酒约 91%、零售约 10%、银行无此指标=NaN），
+      横截面排序在很大程度上是在排行业，解读时务必注意。
+  - name: debt_ratio
+    cname: 资产负债率
+    category: fundamental
+    direction: 0
+    impl: factors.impl.fundamental.fin_value
+    params: {field: ZCFZL, annualize: false}
+    data_deps: [fundamental]
+    tags: [基本面, 偿债, 资本结构]
+    unit: "%（百分数）"
+    desc: >
+      东财 ZCFZL（资产负债率 = 总负债/总资产），按公告日 as-of 对齐，单位 %。
+      时点指标，**不年度化**。**刻意标 direction=0** —— 经典"低杠杆异象"假设越低越好，
+      但本横截面里混着银行/保险（长期 90%+）等金融业，"低杠杆更好"在这里并不成立，
+      方向正是待检验的问题，不预设（同 ret_5 的处理）。
+  - name: revenue_yoy
+    cname: 营业总收入同比增长
+    category: fundamental
+    direction: 1
+    impl: factors.impl.fundamental.fin_value
+    params: {field: TOTALOPERATEREVETZ, annualize: false}
+    data_deps: [fundamental]
+    tags: [基本面, 成长]
+    unit: "%（百分数）"
+    desc: >
+      东财 TOTALOPERATEREVETZ（营业总收入同比增长率），按公告日 as-of 对齐，单位 %。
+      字段本身已是同比率，**不能**再年度化。注意它是**年内累计**同比
+      （三季报 = 前三季累计 vs 去年同期累计），与单季同比（DJD_TOI_YOY）不同。
+      经典成长因子先验为正。
+  - name: profit_yoy
+    cname: 归母净利润同比增长
+    category: fundamental
+    direction: 1
+    impl: factors.impl.fundamental.fin_value
+    params: {field: PARENTNETPROFITTZ, annualize: false}
+    data_deps: [fundamental]
+    tags: [基本面, 成长]
+    unit: "%（百分数）"
+    desc: >
+      东财 PARENTNETPROFITTZ（归母净利润同比增长率），按公告日 as-of 对齐，单位 %。
+      同 revenue_yoy 是年内累计同比口径、不年度化。
+      ⚠️ 该字段的极值非常夸张（扭亏/微利基期导致 ±数千 %），分析时注意尾部，
+      必要时先做缩尾（winsorize）再看 IC。经典成长因子先验为正。
+
+  # ---------- 五、合成因子（category: combo，2026-09-22 启用）----------
+  # 组件选取依据 = 研究文档 §3.2 的秩相关矩阵（每簇取 |IC| 最强者）：
+  #   动量簇    → ma_bias_20（×ret_10 ρ=0.886、×rsi_14 0.863 的同族代表）
+  #   活跃度簇  → amplitude_5（×volatility_20 ρ=0.780 的同族代表）
+  #   独立维度  → today_pct（与波动/换手/振幅近零相关，自成一维）
+  # 两个变体只差 `signs`，回答两个不同问题（见各自 desc）：
+  #   combo_eq3   —— 全 +1：**正交维度**摞起来能不能提升 IC 的稳定性（ICIR）？
+  #   combo_rev3  —— 全 −1：实测组件 IC 全为负，取负后**分层形状**是否还一样？
+  #                  （§4 纪律 4：只看首尾差会把"极端组崩坏"误读成"平滑反转"）
+  - name: combo_eq3
+    cname: 合成·动量+活跃度+当日（同向）
+    category: combo
+    direction: 0
+    impl: factors.impl.combo.rank_combo
+    params: {factors: [ma_bias_20, amplitude_5, today_pct], signs: [1, 1, 1]}
+    data_deps: [factor]
+    tags: [合成, 三簇]
+    unit: "0~1（三个组件百分位秩的等权均值）"
+    desc: >
+      三个独立维度代表（动量 ma_bias_20 / 活跃度 amplitude_5 / 当日 today_pct）
+      各自做**逐日截面百分位秩**后等权平均，取值 0~1。
+      符号全为 +1 = **不预设方向**，纯粹测"把三个正交维度摞起来"能否改善 ICIR。
+      ⚠️ 组件必须是**同一区间**算出来的：本因子按 (date, symbol) 逐行对齐，
+      长度不一致会直接报错（报错信息里给了重算命令）。
+  - name: combo_rev3
+    cname: 合成·动量+活跃度+当日（反向）
+    category: combo
+    direction: 0
+    impl: factors.impl.combo.rank_combo
+    params: {factors: [ma_bias_20, amplitude_5, today_pct], signs: [-1, -1, -1]}
+    data_deps: [factor]
+    tags: [合成, 三簇, 反转检验]
+    unit: "−1~0（三个组件百分位秩取负后的等权均值）"
+    desc: >
+      与 combo_eq3 组件相同、**符号全部取负**，取值 −1~0。
+      列出它的唯一理由：实测三个组件的 RankIC **全部为负**（研究文档 §3），
+      所以"反向"是数据暗示的方向；必须与正向版本**对照**才能判断反转是均匀的、
+      还是只有极端组崩坏（§4 纪律 4：分层要看形状，不能只看首尾差）。
+      ⚠️ 符号取负只是**因子变换**，不涉及任何策略规则；要用进策略则另说
+      （须先改《策略规格说明书》并升版本）。

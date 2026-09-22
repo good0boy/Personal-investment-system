@@ -1,0 +1,77 @@
+# ============================================================
+# A股投资本地服务 · 容器编排
+#
+# ⚠️ 阶段 0 说明：本地开发**不用**这份配置。
+#    本地跑法见 README.md（直接 uvicorn + npm run dev 更舒服）。
+#    这份配置的作用是保证「本地能跑 = 服务器能跑」，上线时一条命令起。
+#
+# 用法（在项目根目录）：
+#     docker compose -f deploy/docker-compose.yml up -d --build
+#     docker compose -f deploy/docker-compose.yml logs -f backend
+#     docker compose -f deploy/docker-compose.yml down
+# ============================================================
+
+name: stock-system
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    image: stock-system-backend:0.1.0
+    container_name: stock-backend
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      # 容器内必须监听 0.0.0.0
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      APP_ENV: "prod"
+      DEBUG: "false"
+      # 数据根目录指向挂载卷
+      DATA_ROOT: "/app/data"
+    volumes:
+      # 数据与日志都挂出来，容器重建不丢数据
+      - ../data:/app/data
+      - ../backend/logs:/app/logs
+      # 配置文件挂出来，改配置不用重建镜像
+      - ../backend/config:/app/config:ro
+    ports:
+      # 只在宿主机本地暴露，不对外；由 nginx 反代对外提供服务
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    image: stock-system-frontend:0.1.0
+    container_name: stock-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

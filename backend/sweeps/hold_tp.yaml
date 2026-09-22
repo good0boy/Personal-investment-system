@@ -1,0 +1,34 @@
+# ============================================================
+# 参数寻优网格 · 首组：「最大持有期」× 「止盈阈值」
+# ============================================================
+# 依据：策略规格说明书.md v1.2 §5.2
+#   「这两个参数直接决定交易成本，是收益的最大变量」
+#
+# 用法：
+#   cd backend
+#   python -m strategies.sweep --config sweeps/hold_tp.yaml --tag v1
+#
+# ⚠️ 参数寻优只允许跑**样本内**区间（2020-06-01 ~ 2024-12-31）。
+#    样本外数据在规则冻结前绝不允许被看到 —— 代码里硬编码拒绝，
+#    不是靠自觉（见 strategies/sweep.py 的 _assert_in_sample）。
+# ============================================================
+
+strategy: momentum
+description: 最大持有期 × 止盈阈值（扣成本后净浮盈）
+
+# 参数网格：笛卡尔积展开。
+# hold_days_max 4 个 × take_profit_net 3 个 = 12 组
+params:
+  hold_days_max: [10, 20, 40, 60]
+  take_profit_net: [0.05, 0.10, 0.15]
+
+# 敏感性分析：哪个参数在横轴上、以什么顺序排（识别"高原"还是"尖峰"）
+# 留空则由 sweep 按网格键的字母序自动取前两个
+sensitivity:
+  x: hold_days_max
+  series: take_profit_net
+
+# 主指标：用于挑最优组合与计算敏感性落差
+#   可选 annual_return / total_return / sharpe / calmar
+#   年化成本是收益的最大敌人 → 默认看年化收益
+objective: annual_return

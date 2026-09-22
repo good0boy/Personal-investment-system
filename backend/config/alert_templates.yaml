@@ -1,0 +1,224 @@
+# ============================================================
+# 模块 5 · 提醒消息模板（阶段 5）
+#
+# 这是模板的**唯一人工维护入口**（同 config/catalog/*.yaml 的地位）。
+# 改这里不需要动代码，改完重启后端生效。
+#
+# ------------------------------------------------------------
+# 渲染规则
+# ------------------------------------------------------------
+# 引擎：Jinja2（`Environment(autoescape=False)` —— 内容要能带 <font> 标签）
+# 语法：{{ 变量 }}   {% if %}   {{ "%.2f"|format(x) }}
+#
+# 变量由 alert_service 传入，见各模板的 `vars` 说明（仅文档用，不参与渲染）。
+#
+# ------------------------------------------------------------
+# 颜色约定（★ 与中国市场一致：红涨绿跌，与欧美相反）
+# ------------------------------------------------------------
+#   <font color="warning">  橙红  —— 开仓 / 盈利 / 上涨
+#   <font color="info">     绿色  —— 清仓 / 亏损 / 下跌
+#   <font color="comment">  灰色  —— 次要信息
+#   ★ 只用这三个值。企微 markdown 不支持任意 hex，写 #ff0000 会原样显示。
+#
+# ------------------------------------------------------------
+# 🔴 安全校验：自定义关键词
+# ------------------------------------------------------------
+# 企微群机器人若开了「自定义关键词」安全设置，消息里**必须**包含关键词，
+# 否则会被静默丢弃（返回 errcode=0 但收不到！这是最难查的一类坑）。
+# 本项目统一用关键词：**持仓提醒**
+#
+# 因此：所有模板的 title 都必须含「持仓提醒」四个字。
+#   ⚠️ 改 title 时务必保留它，否则消息会"发送成功但收不到"。
+#
+# ------------------------------------------------------------
+# 结构
+# ------------------------------------------------------------
+#   templates:
+#     <action>:
+#       title:  消息首行（群列表里可见，也用于日志标题）
+#       vars:   变量说明（纯文档，代码不读）
+#       body:   正文
+#       level:  默认级别 info | warning | error（代码可覆盖）
+#
+# action 枚举：open_position | close_position | daily_summary | test | job_failed
+# ============================================================
+
+version: "1.0"
+
+#: 所有消息必须包含的关键词（企微自定义关键词安全校验）。
+#: 代码在渲染后会**断言**它存在 —— 缺了就补到标题前，避免"发了收不到"。
+required_keyword: "持仓提醒"
+
+templates:
+
+  # ----------------------------------------------------------
+  # 开仓
+  # ----------------------------------------------------------
+  open_position:
+    title: "持仓提醒 · 开仓 {{ name }}"
+    level: info
+    vars:
+      - "strategy_name: 策略名"
+      - "account_name: 账户名"
+      - "date: 成交日"
+      - "symbol: 内部代码（sh.600519）"
+      - "name: 股票名称"
+      - "price: 成交价（后复权）"
+      - "shares: 成交股数"
+      - "amount: 成交金额（元，不含费用）"
+      - "cost: 买入费用（元）"
+      - "reason: 买入原因（策略标签）"
+      - "position_count: 开仓后持仓只数"
+      - "max_positions: 最大持仓只数"
+    body: |
+      **持仓提醒 · 开仓**
+      > 标的：<font color="warning">**{{ name }}**（{{ symbol }}）</font>
+      > 价格：<font color="warning">{{ "%.2f"|format(price) }}</font> × {{ shares }} 股
+      > 金额：{{ "%.2f"|format(amount) }} 元　费用：{{ "%.2f"|format(cost) }} 元
+      > 原因：{{ reason }}
+      > 仓位：{{ position_count }} / {{ max_positions }} 只
+      > 账户：{{ account_name }}　策略：{{ strategy_name }}
+      > 时间：{{ date }}
+
+  # ----------------------------------------------------------
+  # 清仓（盈利走 warning 橙红、亏损走 info 绿 —— 由 body 里的条件分支决定）
+  # ----------------------------------------------------------
+  close_position:
+    title: "持仓提醒 · 清仓 {{ name }}"
+    level: info
+    vars:
+      - "strategy_name / account_name / date / symbol / name"
+      - "entry_date: 买入日"
+      - "entry_price: 买入价"
+      - "exit_price: 卖出价"
+      - "shares: 股数"
+      - "net_pnl: 净盈亏（已扣双边费用）"
+      - "net_return: 净收益率（小数，如 0.1023）"
+      - "cost: 总费用"
+      - "hold_days: 持有交易日数（含首尾）"
+      - "exit_reason: 卖出原因（time_stop|take_profit|...）"
+      - "exit_reason_cn: 卖出原因中文"
+      - "nav: 当日账户净值"
+      - "nav_pct: 净值累计涨跌幅"
+    body: |
+      **持仓提醒 · 清仓**
+      > 标的：<font color="{% if net_pnl >= 0 %}warning{% else %}info{% endif %}">**{{ name }}**（{{ symbol }}）</font>
+      > 卖出：<font color="{% if net_pnl >= 0 %}warning{% else %}info{% endif %}">{{ "%.2f"|format(exit_price) }}</font> × {{ shares }} 股
+      > 盈亏：<font color="{% if net_pnl >= 0 %}warning{% else %}info{% endif %}">**{{ "%+.2f"|format(net_pnl) }} 元（{{ "%+.2f"|format(net_return * 100) }}%）**</font>
+      > 买入：{{ entry_date }} @ {{ "%.2f"|format(entry_price) }}　持有 {{ hold_days }} 个交易日
+      > 费用：{{ "%.2f"|format(cost) }} 元　原因：{{ exit_reason_cn }}
+      > 账户净值：{{ "%.4f"|format(nav) }}（{{ "%+.2f"|format(nav_pct * 100) }}%）
+      > 账户：{{ account_name }}　策略：{{ strategy_name }}
+      > 时间：{{ date }}
+
+  # ----------------------------------------------------------
+  # 每日早报（交易日 08:00）—— 「今日开仓计划」
+  # ----------------------------------------------------------
+  # ★ 口径说明（主人 2026-09-20 拍板，方案 A）
+  #   数据源 = `data/paper/{account}/positions.parquet` 的**最新交易日快照**
+  #            + `nav.parquet` 的总资产 / 现金。
+  #
+  #   为什么不是 orders.parquet 里的「计划单」：
+  #     引擎的 T 日挂单存在内存 `self.pending`，**不落 orders 流水**；
+  #     只有"无法成交被顺延"的才记一行 pending，且带的是**历史 signal_date**
+  #     （实测 7 条全是 2025-01~2026-07 的僵尸单），
+  #     最后一天挂出的单反而被记成 `rejected / 回测结束，未及成交`。
+  #     → 用 orders 取"明日计划"会把僵尸单当计划推出去，是错误口径。
+  #
+  #   为什么 positions 反而是对的：
+  #     23:00 跑批是**全量重算到最新交易日**，T+1 开盘的成交已经计入，
+  #     所以 08:00 看到的持仓 = 今天开盘后会持有的仓位，是**确定值**而非预测。
+  #
+  #   注意 label 用「持仓」而不是「开仓」—— 它含"已有持仓未变"的部分，
+  #   写"今日开仓"会让人误以为这些全是当天新买的。
+  #   ★ 若主人要严格只列新增，把持仓按 entry_date == date 过滤即可（改本模板
+  #     的上下文构造 `alert_service._daily_summary_ctx`），模板本身不用动。
+  daily_summary:
+    title: "持仓提醒 · 今日持仓 {{ date }}"
+    level: info
+    vars:
+      - "date: 数据日期（最新交易日）"
+      - "account_name / strategy_name"
+      - "has_position: 是否有持仓（布尔）"
+      - "holdings_text: 持仓明细多行文本（每行已带 '> - ' 前缀，空仓时为 '> - 无'）"
+      - "position_summary: '名称（代码）' 顿号连接（空仓时为 '无'）"
+      - "position_count / max_positions: 当前持仓只数 / 上限"
+      - "position_ratio: 总仓位占比（0.897 = 89.7%）"
+      - "cash_ratio: 现金占比"
+      - "nav / nav_pct: 账户净值 / 累计涨跌幅"
+      - "total_asset: 总资产（元）"
+      - "cash: 可用现金（元）"
+      - "unrealized_pnl: 持仓浮动盈亏合计（元）"
+      - "drawdown: 当前回撤（负数小数）"
+    # ------------------------------------------------------------
+    # ⚠️ 排版铁律：企微 markdown 里**每一行引用都必须以 `>` 开头**，
+    #   否则该行会脱离引用块、在手机上排版塌掉。
+    #
+    #   因此 **不能用 `{% if %}` 独占一行来控制行的有无** ——
+    #   `trim_blocks=True` 会把块标签那一行的换行吃掉，导致
+    #   `> 开仓股票：…` 和 `> 开仓仓位：…` 挤成同一行（已实测踩过）。
+    #
+    #   正确做法：用**变量**承载条件文本（`position_ratio_text` /
+    #   `holdings_text`），模板里只做行内插值，不出现独占一行的 Jinja 块标签。
+    #
+    # ★ 正文**不写重复小标题**：`RenderedMessage.full_text` 会把 `title`
+    #   自动加粗后放到第一行。正文再写一遍「持仓提醒 · 今日持仓（日期）」
+    #   就会出现两行近似标题 —— 去重逻辑是**前缀匹配**（`title` 以正文首行
+    #   开头才删），而标题里是空格、正文里是「（」，前缀关系不成立 → 删不掉。
+    #   所以正文首行直接进内容，不重复标题。
+    # ------------------------------------------------------------
+    body: |
+      > 开仓股票：{{ position_summary }}
+      > 开仓仓位：{{ position_ratio_text }}
+      > 单只占比：
+      {{ holdings_text }}
+      > 总资产：{{ "%.2f"|format(total_asset) }} 元　净值 {{ "%.4f"|format(nav) }}（<font color="{% if nav_pct >= 0 %}warning{% else %}info{% endif %}">{{ "%+.2f"|format(nav_pct * 100) }}%</font>）
+      > 浮动盈亏：<font color="{% if unrealized_pnl >= 0 %}warning{% else %}info{% endif %}">{{ "%+.2f"|format(unrealized_pnl) }} 元</font>　距最高点 {{ "%.2f"|format(drawdown * 100) }}%
+      > 账户：{{ account_name }}　策略：{{ strategy_name }}
+
+  # ----------------------------------------------------------
+  # 链路测试（POST /api/v1/alerts/test）
+  # ----------------------------------------------------------
+  test:
+    title: "持仓提醒 · 链路测试"
+    level: info
+    vars:
+      - "date / time: 发送时刻"
+      - "channel: 当前渠道（webhook | app）"
+      - "channel_cn: 渠道中文名"
+      - "key_masked: 脱敏后的凭证"
+      - "app_version / env"
+      - "operator: 触发来源"
+    body: |
+      **持仓提醒 · 链路测试**
+      > 🐕 如果你看到这条消息，说明**从本地服务到企业微信的链路已经打通**。
+      > 渠道：{{ channel_cn }}（`{{ channel }}`）
+      > 凭证：`{{ key_masked }}`
+      > 环境：{{ env }}　版本：v{{ app_version }}
+      > 触发：{{ operator }}
+      > 时间：{{ time }}
+
+  # ----------------------------------------------------------
+  # 调度任务失败（消费 job_run_log 的失败事件）
+  # ----------------------------------------------------------
+  job_failed:
+    title: "持仓提醒 · 任务失败 {{ job_name }}"
+    level: error
+    vars:
+      - "job_id / job_name: 任务标识与中文名"
+      - "run_date: 逻辑运行日"
+      - "trigger_type: cron | manual | catch_up"
+      - "error_type: 异常类名"
+      - "error_message: 异常信息"
+      - "duration: 耗时（秒）"
+      - "date / time: 发生时刻"
+    body: |
+      **持仓提醒 · 任务失败**
+      > 任务：<font color="warning">**{{ job_name }}**（`{{ job_id }}`）</font>
+      > 运行日：{{ run_date }}　触发：{{ trigger_type }}
+      > 异常：`{{ error_type }}`
+      > 信息：{{ error_message }}
+      > 耗时：{{ "%.2f"|format(duration) }}s
+      > 时间：{{ time }}
+      >
+      > ⚠️ 请检查 <font color="comment">系统状态 → 调度任务</font> 里的执行记录与后端日志。

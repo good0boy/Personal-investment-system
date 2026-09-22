@@ -1,0 +1,54 @@
+# ===== 密钥与环境（绝不提交）=====
+.env
+.env.local
+*.key
+
+# ===== 数据（运行期产物，体积大且可重建）=====
+# ★ 必须写 `data/*` 而不是 `data/`：
+#   `data/` 把**目录本身**排除后，git 直接跳过该目录，再写 `!data/.gitkeep`
+#   也永远匹配不到（实测 `git check-ignore` 仍判定被忽略、`git add` 报 ignored）。
+#   写 `data/*` 只排除内容，目录可进入，否定规则才生效。
+data/*
+!data/.gitkeep
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.pytest_tmp/
+.ruff_cache/
+.mypy_cache/
+
+# ===== Node / 前端 =====
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 测试覆盖率 =====
+.coverage
+htmlcov/
+coverage.xml
+
+# ===== SQLite / 运行产物（data/ 之外的兜底）=====
+*.db
+*.sqlite
+*.sqlite3
+
+# ===== 本地打包（如 data 备份包）=====
+*.zip
+
+# ===== 工作区内部（工作记忆、临时文件）=====
+.workbuddy/
