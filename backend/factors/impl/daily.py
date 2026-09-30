@@ -32,6 +32,7 @@ __all__ = [
     "today_pct",
     "turnover_mean",
     "volatility",
+    "volume_ratio_n",
 ]
 
 #: 因子计算要求的最少有效观测 = 窗口长度（不足即 NaN）
@@ -83,6 +84,23 @@ def _rolling(q: pd.DataFrame, values: np.ndarray, window: int, how: str) -> pd.S
 def _daily_return(q: pd.DataFrame) -> np.ndarray:
     """日收益率（小数）。`pct_chg` 在 baostock 里是**百分数**（1.15 表示 +1.15%）。"""
     return pd.to_numeric(q["pct_chg"], errors="coerce").to_numpy(dtype="float64") / 100.0
+
+
+def _group_shift(q: pd.DataFrame, values: np.ndarray, periods: int) -> np.ndarray:
+    """按 symbol 分组位移，返回与 `q.index` 等长的数组。
+
+    与 `ret_n` 里 `groupby(...).shift(...)` 同源，刻意**显式**写 groupby：
+      · 杜绝"把上一只股票的末行当成下一只的首行"的**跨标的拼接** ——
+        这种错**不报错**，只是数值悄悄对不上标的（本项目最忌讳的那类 bug）；
+      · 用 numpy 数组进出，不让索引参与对齐，避开 `GroupBy.rolling` 的
+        MultiIndex 坑（见 `_rolling` 的说明）。
+    """
+    return (
+        pd.Series(np.asarray(values, dtype="float64"), index=q.index, dtype="float64")
+        .groupby(q["symbol"].to_numpy(), sort=False)
+        .shift(periods)
+        .to_numpy(dtype="float64")
+    )
 
 
 # ======================================================================
@@ -170,6 +188,32 @@ def turnover_mean(q: pd.DataFrame, window: int = 20) -> pd.Series:
     """
     turn = pd.to_numeric(q["turn"], errors="coerce").to_numpy(dtype="float64")
     return _rolling(q, turn, window, "mean")
+
+
+def volume_ratio_n(q: pd.DataFrame, window: int = 5) -> pd.Series:
+    """量比：`volume[t] / mean(volume[t-window .. t-1])` —— 分母**不含今日**。
+
+    口径（对外说明以 `registry.yaml` 的 `desc` 为准）：
+      · 分子 = 今日成交量；
+      · 分母 = **前 window 个交易日**的平均成交量。
+
+    ⚠️ 分母不含今日是刻意的。写 `_rolling(q, volume, window, "mean")`（含今日）
+    只差一个 shift，但数值会**系统性偏小**（今日自己的量被平均进分母），
+    属于典型的口径漂移 —— 两种写法都能"跑出结果"，必须写死一种并声明。
+
+    `window=1` 时退化为"今日量 ÷ 昨日量"（最朴素的单日量比）。
+
+    边界：窗口不足 → NaN（`_rolling` 的 `min_periods=window`）；
+          分母 ≤ 0（前一日零成交）→ NaN，与 `ret_n` 的 `base > 0` 保护同一惯例。
+    """
+    if window <= 0:
+        raise ValueError(f"window 必须为正整数，收到 {window}")
+    volume = pd.to_numeric(q["volume"], errors="coerce").to_numpy(dtype="float64")
+    # 先把量整体后移一日，再求前 window 日均值 —— 即"前 window 个交易日"的均量
+    base = _rolling(q, _group_shift(q, volume, 1), window, "mean")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = np.where(base.to_numpy() > 0, volume / base.to_numpy(), np.nan)
+    return pd.Series(out, index=q.index, dtype="float64")
 
 
 def rsi(q: pd.DataFrame, window: int = 14) -> pd.Series:

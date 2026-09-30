@@ -415,11 +415,19 @@ def signature_error(defn: FactorDef, fn: Callable[..., Any]) -> str | None:
     return None
 
 
-def smoke_frame(n_dates: int = 40, n_symbols: int = 3) -> pd.DataFrame:
+def smoke_frame(n_dates: int = 80, n_symbols: int = 3) -> pd.DataFrame:
     """构造一个**最小但真实形态**的合成行情帧，用于冒烟调用实现。
 
     ⚠️ 为什么不复用 tests 的夹具：单元测试夹具服务于"验证数值"，
        这里是"验证能不能跑通"，必须自包含、且能被 CLI 直接调用。
+
+    ⚠️ 天数（默认 80）不是随便定的：**必须大于所有已注册因子的最大 window**。
+       判据是 `smoke_test` 的"全为 NaN → broken"（见下方 `out.notna().sum() == 0`）——
+       窗口比帧还长的因子天然全 NaN，会被误判成"实现有误"。
+       这个坑在 2026-09-30 新增 `ret_50`（window=50）时暴露过：当时默认 40 天，
+       `--check` 直接把 ret_50 标成 broken。所以：
+         · 有测试钉住这条不变式（`test_smoke_frame_covers_largest_registered_window`）；
+         · 以后加更长窗口的因子，先看这条断言，再看本默认值要不要抬。
     """
     dates = pd.bdate_range("2024-01-01", periods=n_dates)
     rows = []

@@ -46,6 +46,9 @@ categories:
       动机：秩相关矩阵实测 11 个日度因子只坍缩成约 3 个独立信息维度
       （动量簇 / 活跃度簇 / today_pct），继续加同族因子是重复计数，
       跨簇合成才可能有信息增量（研究文档 §3.2）。
+      ⚠️ 该结论是 **2026-09-22 用当时 11 个日度因子**做的；2026-09-30 增至 15 个
+      （+ret_50 / volume_ratio_1/5/10）后**尚未重测** —— 尤其 ret_50 是否只是
+      动量簇的"更长窗口"，直接决定它算不算新维度。
       ⚠️ 前置条件：**组件因子必须已算过，且与本因子用同一区间**
       （合成是对 (date, symbol) 逐行对齐的，区间不一致会显式报错，
       命令见报错信息）。合成口径见 factors/impl/combo.py 的模块 docstring。
@@ -358,3 +361,59 @@ factors:
       还是只有极端组崩坏（§4 纪律 4：分层要看形状，不能只看首尾差）。
       ⚠️ 符号取负只是**因子变换**，不涉及任何策略规则；要用进策略则另说
       （须先改《策略规格说明书》并升版本）。
+  # ---------- 四、长周期动量与量价（2026-09-30 新增）----------
+  # ret_50 复用 ret_n；三个量比共用 volume_ratio_n，差别只在 window。
+  # direction 一律是按主人 2026-09-30 的指定写的**先验假设**，不是结论 ——
+  # 本项目日频因子的实测 IC 多数为负，先验有被推翻的可能（见各条 desc）。
+  - name: ret_50
+    cname: 近50日累计收益
+    category: daily
+    direction: 1
+    impl: factors.impl.daily.ret_n
+    params: {window: 50}
+    data_deps: [quote_daily]
+    tags: [动量, 经典]
+    unit: "小数（0.05 = 5%）"
+    desc: >
+      close / close[t-50] − 1（后复权价，50 个交易日）。中期动量口径。
+      direction=1 是**先验假设**（与 ret_10 / momentum_20 同族），不是结论；
+      ⚠️ 本项目日频动量族实测 IC 多为负，真假以 analysis 的 IC 与分层为准。
+  - name: volume_ratio_1
+    cname: 量比（1日）
+    category: daily
+    direction: 1
+    impl: factors.impl.daily.volume_ratio_n
+    params: {window: 1}
+    data_deps: [quote_daily]
+    tags: [量价, 活跃度]
+    unit: "倍数（1.0 = 与前1日成交量持平）"
+    desc: >
+      volume[t] / volume[t-1]：今日成交量 ÷ 前 1 个交易日的成交量
+      （分母**不含今日**）。单日量比噪声大。
+      direction=1 是**先验假设**（放量 = 资金关注度溢价），真假以 IC 与分层为准。
+  - name: volume_ratio_5
+    cname: 量比（5日）
+    category: daily
+    direction: 1
+    impl: factors.impl.daily.volume_ratio_n
+    params: {window: 5}
+    data_deps: [quote_daily]
+    tags: [量价, 活跃度]
+    unit: "倍数（1.0 = 与前5日均量持平）"
+    desc: >
+      volume[t] / mean(volume[t-5 .. t-1])：今日成交量 ÷ **前 5 个交易日**的平均成交量
+      （分母**不含今日**）。>1 表示相对近期放量。
+      direction=1 是**先验假设**，真假以 IC 与分层为准。
+  - name: volume_ratio_10
+    cname: 量比（10日）
+    category: daily
+    direction: 1
+    impl: factors.impl.daily.volume_ratio_n
+    params: {window: 10}
+    data_deps: [quote_daily]
+    tags: [量价, 活跃度]
+    unit: "倍数（1.0 = 与前10日均量持平）"
+    desc: >
+      volume[t] / mean(volume[t-10 .. t-1])：今日成交量 ÷ **前 10 个交易日**的平均成交量
+      （分母**不含今日**）。口径同 volume_ratio_5，窗口更长、更平滑。
+      direction=1 是**先验假设**，真假以 IC 与分层为准。

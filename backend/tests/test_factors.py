@@ -459,6 +459,121 @@ def test_window_must_be_positive() -> None:
         daily.ret_n(q, window=0)
 
 
+# ---------------------------------------------------------------
+# 长周期动量与量比（2026-09-30 新增：ret_50 / volume_ratio_1/5/10）
+# ---------------------------------------------------------------
+def test_ret_50_is_close_over_close_50_days_ago() -> None:
+    """ret_50 与 ret_3/10/20 共用 ret_n，差别只在 window —— 钉一次长窗口的手算值。"""
+    n = 51
+    closes = [10.0 * (1.01**i) for i in range(n)]
+    rows = [
+        row("sh.600000", str(d.date()), c, preclose=c)
+        for d, c in zip(pd.bdate_range("2024-01-01", periods=n), closes, strict=True)
+    ]
+    q = make_quote(rows)
+    out = daily.ret_n(q, window=50)
+
+    assert out.index.equals(q.index)
+    assert out.iloc[:50].isna().all(), "窗口不足的前 50 行必须 NaN"
+    assert out.iloc[50] == pytest.approx(closes[50] / closes[0] - 1)
+
+
+def _volume_rows(volumes: list[float], symbol: str = "sh.600000") -> list[dict]:
+    dates = pd.bdate_range("2024-01-01", periods=len(volumes))
+    return [
+        row(symbol, str(d.date()), 10.0, preclose=10.0, volume=v)
+        for d, v in zip(dates, volumes, strict=True)
+    ]
+
+
+def test_volume_ratio_n_uses_previous_window_excluding_today() -> None:
+    """★ 分母是【前 window 个交易日】的均量，**不含今日**。
+
+    含今日（直接 `_rolling(volume, window, "mean")`）是另一种写法，
+    两种都能跑出结果、但数值不同 —— 这条把口径钉死。
+    """
+    vols = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
+    q = make_quote(_volume_rows(vols))
+    out = daily.volume_ratio_n(q, window=2)
+
+    assert out.index.equals(q.index)
+    assert out.iloc[:2].isna().all(), "分母窗口不足的前 2 行必须 NaN"
+    # t=2：30 ÷ mean(10,20) = 2.0
+    assert out.iloc[2] == pytest.approx(30.0 / 15.0)
+    # t=5：60 ÷ mean(40,50) = 1.333，而不是含今日口径的 60 ÷ mean(50,60) = 1.09
+    assert out.iloc[5] == pytest.approx(60.0 / 45.0)
+    assert out.iloc[5] != pytest.approx(60.0 / 55.0)
+
+
+def test_volume_ratio_1_is_today_over_yesterday() -> None:
+    """window=1 退化为最朴素的"今日量 ÷ 昨日量"。"""
+    q = make_quote(_volume_rows([100.0, 250.0]))
+    out = daily.volume_ratio_n(q, window=1)
+
+    assert pd.isna(out.iloc[0]), "首日没有昨日量 → NaN"
+    assert out.iloc[1] == pytest.approx(2.5)
+
+
+def test_volume_ratio_does_not_leak_across_symbols() -> None:
+    """★ 跨标的不得污染：B 的首行不能拿 A 的末行成交量当分母。
+
+    这正是 `_group_shift` 存在的理由 —— 忘了 groupby 的 shift **不报错**，
+    只是把上一只股票的末行当成下一只的首行（本项目最忌讳的静默错配）。
+    """
+    rows = _volume_rows([10.0, 20.0, 30.0], symbol="sh.600000") + _volume_rows(
+        [1000.0, 2000.0, 4000.0], symbol="sz.000001"
+    )
+    q = make_quote(rows)
+    out = daily.volume_ratio_n(q, window=1)
+
+    idx_b = q[q["symbol"] == "sz.000001"].index
+    assert pd.isna(out.loc[idx_b[0]]), "B 首行必须是 NaN（拿到 A 的末行就是假值）"
+    assert out.loc[idx_b[1]] == pytest.approx(2.0)  # 2000/1000，不是 2000/30
+    assert out.loc[idx_b[2]] == pytest.approx(2.0)  # 4000/2000
+
+
+def test_volume_ratio_zero_base_is_nan() -> None:
+    """前一日零成交（分母 = 0）→ NaN，不是 inf。"""
+    q = make_quote(_volume_rows([0.0, 10.0]))
+    out = daily.volume_ratio_n(q, window=1)
+    assert pd.isna(out.iloc[1])
+
+
+def test_volume_ratio_window_must_be_positive() -> None:
+    q = make_quote(_volume_rows([1.0, 2.0]))
+    with pytest.raises(ValueError, match="window"):
+        daily.volume_ratio_n(q, window=0)
+
+
+def test_smoke_frame_covers_largest_registered_window() -> None:
+    """★ 不变式：冒烟帧的交易日数必须**大于**所有日度因子声明过的最大 window。
+
+    为什么要有这条：`smoke_test` 把"结果全为 NaN"当作 "窗口长度可能大于数据长度"
+    的证据并判 broken。2026-09-30 新增 `ret_50`(window=50) 时，`smoke_frame` 默认
+    只有 40 天 → ret_50 在冒烟帧上恒为全 NaN → 被误判 broken（`--check` 报红）。
+    这条断言把"帧天数 > 最大窗口"变成显式契约：以后加更长窗口的因子，先看它。
+    """
+    windows = [
+        f.params.get("window")
+        for f in loader.list_factors("daily")
+        if isinstance(f.params.get("window"), int)
+    ]
+    max_window = max(windows) if windows else 0
+    q = loader.smoke_frame()
+    assert q["date"].nunique() > max_window, (
+        f"冒烟帧只有 {q['date'].nunique()} 个交易日，却存在 window={max_window} 的因子"
+        " —— 该因子的冒烟会被误判为 broken（改 loader.smoke_frame 的默认天数）"
+    )
+
+
+def test_ret_50_needs_more_than_forty_days_evidence() -> None:
+    """反向证据：40 天的帧确实会算出全 NaN —— 说明上面那条不变式不是多余的。"""
+    defn = loader.get_factor("ret_50")
+    fn = loader.resolve_impl(defn)
+    out = fn(loader.smoke_frame(n_dates=40), **defn.params)
+    assert out.notna().sum() == 0
+
+
 # ======================================================================
 # 四、产物清单
 # ======================================================================

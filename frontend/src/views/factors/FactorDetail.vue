@@ -176,7 +176,10 @@
       </el-tab-pane>
 
       <!-- ============ 时序 ============ -->
-      <el-tab-pane label="时序" name="series">
+      <!-- lazy：四个图表页签都加。图表在隐藏容器里 init 会拿到 100×100 的画布
+           （见 components/EChart.vue 的说明）；lazy 让它们只在可见时才挂载。
+           注意 lazy 只影响【首次渲染时机】，之后仍是 v-show，页签状态不会丢。 -->
+      <el-tab-pane label="时序" name="series" lazy>
         <div class="panel">
           <p class="panel-title">
             因子走势
@@ -219,7 +222,7 @@
       </el-tab-pane>
 
       <!-- ============ 截面分布 ============ -->
-      <el-tab-pane label="截面分布" name="cross">
+      <el-tab-pane label="截面分布" name="cross" lazy>
         <div class="panel">
           <p class="panel-title">
             某交易日的截面分布
@@ -290,7 +293,7 @@
       </el-tab-pane>
 
       <!-- ============ 分层回测 ============ -->
-      <el-tab-pane label="分层回测" name="layered">
+      <el-tab-pane label="分层回测" name="layered" lazy>
         <template v-if="layered">
           <div class="panel">
             <p class="panel-title">
@@ -389,7 +392,7 @@
       </el-tab-pane>
 
       <!-- ============ IC ============ -->
-      <el-tab-pane label="IC 分析" name="ic">
+      <el-tab-pane label="IC 分析" name="ic" lazy>
         <template v-if="icResp">
           <div class="panel">
             <p class="panel-title">
