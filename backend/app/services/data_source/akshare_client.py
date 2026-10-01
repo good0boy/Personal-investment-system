@@ -12,6 +12,15 @@
 ⚠️ akshare 版本间常有 breaking change，必须锁版本 + 启动自检。
    实测版本：1.18.94
 
+★★ 2026-10-01 数据源现状（**取数前先看这段**）
+   · 东财 `push2` / `push2his` 域名在本机被网络**掐断** → 走这两个域名的
+     方法（`fetch_spot` / `fetch_daily` / `fetch_index_daily`）**目前不可用**，
+     已标记 deprecated。相关接口条目也已从 `config/catalog/` 下架。
+   · **不再考虑东财 push2**：能替代的已改用同花顺 —— akshare 内置的
+     `*_ths`（板块列表/历史）与 `fuyao_client`（板块成分/快照/涨跌停/热榜/龙虎榜）。
+   · 东财 `push2ex`（涨停板系列）与 `datacenter-web`（龙虎榜）**仍可用**。
+   · **优先选 `*_ths` 后缀的接口**：它们走 10jqka 域名，实测全通。
+
 ★★ 频率控制（比 baostock 严格得多）
 
    akshare 的数据源（东财、新浪）对高频访问很敏感，因此配置独立节流：
@@ -331,6 +340,11 @@ class AkshareClient(BaseDataSource):
     # ------------------------------------------------------------------
     def fetch_spot(self) -> pd.DataFrame:
         """全市场实时快照（一次拿 5000+ 只）。
+
+        ⚠️ **deprecated（2026-10-01）**：本方法走东财 `stock_zh_a_spot_em`，
+           而 `push2.eastmoney.com` 在本机被网络**掐断** → 目前必然失败。
+           要全市场快照请用 `fuyao_client.snapshot()`（同花顺官方 REST）。
+           项目已定"不再考虑东财 push2"，本方法保留只为让失败点集中可见。
 
         ⚠️ 实时数据的缓存 TTL 很短（默认 10 秒），否则"实时"就没有意义了。
         """

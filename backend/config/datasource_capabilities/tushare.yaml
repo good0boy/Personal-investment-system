@@ -124,6 +124,16 @@ capabilities:
     quality: "good"
     note: "top_list / top_inst"
     priority: "备选"
+  hot_list:
+    supported: false
+    quality: "none"
+    note: "❌ 无热榜能力"
+    priority: "-"
+  anomaly:
+    supported: false
+    quality: "none"
+    note: "❌ 无异动能力"
+    priority: "-" 
 
 stability:
   interface_change_risk: "low"

@@ -172,6 +172,120 @@ def _raise_for_business_code(code: int, message: str, *, path: str) -> None:
     )
 
 
+#: 龙虎榜 `stock_items[]` 的字段集（实测 2026-10-01，14 列）。
+#: ★ 落盘时按这个顺序 reindex，保证"同一 glob 内 schema 一致"。
+DRAGON_TIGER_STOCK_COLUMNS: tuple[str, ...] = (
+    "thscode",
+    "ticker",
+    "name",
+    "change",
+    "net_value",
+    "net_rate",
+    "hot_rank",
+    "buy_value",
+    "sell_value",
+    "limit_reason",
+    "range_days",
+    "org_net_value",
+    "hot_money_net_value",
+    "concept_names",          # ← 由嵌套的 concept_list 展平
+)
+
+#: 龙虎榜游资明细 `hot_money_items[].rows[]` 的字段集（实测 **18 列**，
+#: 比 stock_items 多 amount / hot_money_net_rate / hot_money_item_* 四项）。
+DRAGON_TIGER_HOT_MONEY_COLUMNS: tuple[str, ...] = (
+    "thscode",
+    "ticker",
+    "name",
+    "change",
+    "net_value",
+    "net_rate",
+    "hot_rank",
+    "buy_value",
+    "sell_value",
+    "limit_reason",
+    "range_days",
+    "org_net_value",
+    "amount",
+    "hot_money_net_value",
+    "hot_money_net_rate",
+    "hot_money_item_net_value",
+    "hot_money_item_net_rate",
+    "concept_names",
+)
+
+
+def _flatten_concepts(value: Any) -> str:
+    """把嵌套的 `concept_list`（`[{"name": "PCB概念"}, ...]`）展平成 `"|"` 连接串。
+
+    ⚠️ 为什么不单独存一张长表：本项目的主线是"因子/回测时按标的+日期取数"，
+       概念的归属查询频次远低于按标的取数；单列连接串能让主表 glob 保持
+       一张宽表（而长表会让同一个日目录里出现两套 schema）。
+       代价是"按概念反查标的"要 `LIKE '%xxx%'` —— 在 1.7 万行量级完全可以接受。
+    """
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    names: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            n = item.get("name")
+            if n:
+                names.append(str(n))
+        elif item:
+            names.append(str(item))
+    return "|".join(names)
+
+
+def _flatten_dragon_tiger_stock(data: dict[str, Any]) -> pd.DataFrame:
+    """`data.stock_items[]` → DataFrame（含 `trade_date` / `board_type` 两列身份）。"""
+    df = pd.DataFrame(data.get("stock_items") or [])
+    if df.empty:
+        return pd.DataFrame(columns=("trade_date", "board_type", *DRAGON_TIGER_STOCK_COLUMNS))
+    if "concept_list" in df.columns:
+        df["concept_names"] = df["concept_list"].map(_flatten_concepts)
+    df["trade_date"] = data.get("trade_date")
+    df["board_type"] = data.get("board_type")
+    for col in DRAGON_TIGER_STOCK_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+    return df[["trade_date", "board_type", *DRAGON_TIGER_STOCK_COLUMNS]]
+
+
+def _flatten_dragon_tiger_hot_money(data: dict[str, Any]) -> pd.DataFrame:
+    """`data.hot_money_items[]` → 行 = 游资 × 个股。
+
+    服务端结构是 `[{name, buying, rows: [ {...个股字段} ]}, ...]` →
+    把游资名与买入额摊到每一行，得到一张可直接按标的筛的宽表。
+    """
+    rows: list[dict[str, Any]] = []
+    for item in data.get("hot_money_items") or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        buying = item.get("buying")
+        for row in item.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            rec = dict(row)
+            rec["hot_money_name"] = name
+            rec["buying"] = buying
+            rows.append(rec)
+    if not rows:
+        return pd.DataFrame(
+            columns=("trade_date", "hot_money_name", "buying", *DRAGON_TIGER_HOT_MONEY_COLUMNS)
+        )
+    df = pd.DataFrame(rows)
+    if "concept_list" in df.columns:
+        df["concept_names"] = df["concept_list"].map(_flatten_concepts)
+    df["trade_date"] = data.get("trade_date")
+    for col in DRAGON_TIGER_HOT_MONEY_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+    return df[["trade_date", "hot_money_name", "buying", *DRAGON_TIGER_HOT_MONEY_COLUMNS]]
+
+
 class FuyaoClient(BaseDataSource):
     """同花顺 fuyao REST 封装。
 
@@ -625,13 +739,145 @@ class FuyaoClient(BaseDataSource):
             force_refresh=force_refresh,
         )
 
-    def dragon_tiger_list(self, date_ms: str | int | None = None, kind: str = "") -> pd.DataFrame:
-        """龙虎榜榜单（全部 / 机构榜 / 游资榜）。"""
-        return self._frame(
+    # ==================================================================
+    # 龙虎榜
+    #
+    # ⚠️ 这两个接口的响应**不是** `data.item`，而是
+    #    `data.{..., stock_items[], hot_money_items[]}` —— 所以必须用 `_get`
+    #    再手工展平，不能走 `_frame`（旧实现走 `_frame` → 恒返回 0 行）。
+    # ⚠️ 参数是 **`date`(yyyy-MM-dd)** + **`board_type`(all|org|hot_money)**；
+    #    没有 `date_ms`、没有 `type`。只支持一年内，显式传非交易日报 `code=1002`。
+    # ⚠️ 两张表的字段集**不同**（14 / 18 列）→ 落盘时必须分目录，不能混 glob。
+    # ==================================================================
+    def dragon_tiger_list(
+        self, date: str | None = None, board_type: str = "all"
+    ) -> pd.DataFrame:
+        """龙虎榜**个股表**（`board_type=all|org` 时填充）。
+
+        Args:
+            date: 交易日 `yyyy-MM-dd`；省略 = 最近可用交易日。**只支持一年内**。
+            board_type: `all` 全部 / `org` 机构榜 / `hot_money` 游资榜。
+
+        Returns:
+            列见 `_DRAGON_TIGER_STOCK_COLUMNS` + `trade_date` / `board_type`；
+            嵌套的 `concept_list` 已展平为 `concept_names`（`"|"` 连接）。
+        """
+        data = self._get(
             "/api/a-share/special-data/dragon-tiger-list",
-            {"date_ms": date_to_ms(date_ms), "type": kind},
+            {"date": date, "board_type": board_type},
             func_name="dragon_tiger_list",
-            cache_key=f"fuyao:lhb:{date_ms}:{kind}",
+            cache_key=f"fuyao:lhb:{date}:{board_type}",
+        )
+        return _flatten_dragon_tiger_stock(data)
+
+    def dragon_tiger_hot_money(
+        self, date: str | None = None, board_type: str = "hot_money"
+    ) -> pd.DataFrame:
+        """龙虎榜**游资明细**（行 = 游资 × 个股）。
+
+        与 `dragon_tiger_list` 复用同一个缓存 key —— 它俩本就来自同一次
+        HTTP 响应（`hot_money_items` 与 `stock_items` 在同一个信封里），
+        第二次调用直接命中缓存，不会多打一次请求。
+        """
+        data = self._get(
+            "/api/a-share/special-data/dragon-tiger-list",
+            {"date": date, "board_type": board_type},
+            func_name="dragon_tiger_hot_money",
+            cache_key=f"fuyao:lhb:{date}:{board_type}",
+        )
+        return _flatten_dragon_tiger_hot_money(data)
+
+    # ==================================================================
+    # 同花顺热榜
+    #
+    # ⚠️ 三个"当下榜"接口不分页、固定最多 30 条；
+    #    `hot-stock-list-history` 只支持**一年内**，超出报 `code=1003`。
+    # ==================================================================
+    def skyrocket_list(self, period: str = "day") -> pd.DataFrame:
+        """飙升榜（热度排名上升最快的 Top30）。
+
+        Args:
+            period: `day` 日榜 / `hour` 小时榜。
+        """
+        return self._frame(
+            "/api/a-share/special-data/skyrocket-list",
+            {"period": period},
+            func_name="skyrocket_list",
+            cache_key=f"fuyao:skyrocket:{period}",
+            cache_ttl=min(self._cache_ttl, 60.0),
+        )
+
+    def hot_stock_list(self, period: str = "day") -> pd.DataFrame:
+        """A 股热股榜（Top30）。
+
+        Args:
+            period: `day` 24 小时级别 / `hour` 小时级别。
+        """
+        return self._frame(
+            "/api/a-share/special-data/hot-stock-list",
+            {"period": period},
+            func_name="hot_stock_list",
+            cache_key=f"fuyao:hot:{period}",
+            cache_ttl=min(self._cache_ttl, 60.0),
+        )
+
+    def hot_stock_list_history(self, date: str | None = None) -> pd.DataFrame:
+        """按**自然日**返回历史热股排行（Top30）。
+
+        ⚠️ **只支持一年内**（`date` 早于一年前报 `code=1003`）。
+           字段比实时榜少：只有 `thscode/ticker/name/rank`，**没有 heat**。
+            要按标的看走势，用本地由本数据透视出的 `rank_trend`（见 backfill）。
+        """
+        return self._frame(
+            "/api/a-share/special-data/hot-stock-list-history",
+            {"date": date},
+            func_name="hot_stock_list_history",
+            cache_key=f"fuyao:hot_hist:{date}",
+        )
+
+    def hot_stock_rank_trend(
+        self, thscode: str, start_date: str, end_date: str
+    ) -> pd.DataFrame:
+        """单只 A 股在一段**自然日**窗口内的热榜排名走势。
+
+        ⚠️ 窗口与日期都限制在一年内；每次仅一只标的。
+        """
+        return self._frame(
+            "/api/a-share/special-data/hot-stock-rank-trend",
+            {"thscode": thscode, "start_date": start_date, "end_date": end_date},
+            func_name="hot_stock_rank_trend",
+            cache_key=f"fuyao:hot_trend:{thscode}:{start_date}:{end_date}",
+        )
+
+    # ==================================================================
+    # 个股异动
+    #
+    # ⚠️ 这两个接口**只有当日**（没有日期参数）→ 无法回补历史，
+    #    只能从接入那天起按日累积。
+    # ==================================================================
+    def anomaly_analysis_list(self, tag_codes: str = "") -> pd.DataFrame:
+        """当日个股异动原因列表（可选按异动标签过滤）。
+
+        Args:
+            tag_codes: 逗号分隔，合法值 `LIMIT_UP` / `LIMIT_DOWN` / `SHARP_RISE`
+                / `SHARP_FALL` / `RAPID_RALLY` / `RAPID_DECLINE`；多个是 OR 关系。
+        """
+        return self._frame(
+            "/api/a-share/special-data/anomaly-analysis-list",
+            {"tag_codes": tag_codes},
+            func_name="anomaly_analysis_list",
+            cache_key=f"fuyao:anomaly:{tag_codes}",
+            cache_ttl=min(self._cache_ttl, 60.0),
+        )
+
+    def anomaly_analysis_stock(self, thscodes: str) -> pd.DataFrame:
+        """按代码批量查当日个股异动原因（逗号分隔，**去重前最多 50 个**）。"""
+        return self._frame(
+            "/api/a-share/special-data/anomaly-analysis-stock",
+            {"thscodes": thscodes},
+            func_name="anomaly_analysis_stock",
+            cache_key=f"fuyao:anomaly_stock:{thscodes}",
+            cache_ttl=min(self._cache_ttl, 60.0),
         )
 
     # ==================================================================
@@ -730,6 +976,8 @@ fuyao_client = FuyaoClient()
 
 __all__ = [
     "BOARD_TAG_MAP",
+    "DRAGON_TIGER_HOT_MONEY_COLUMNS",
+    "DRAGON_TIGER_STOCK_COLUMNS",
     "FuyaoClient",
     "date_to_ms",
     "fuyao_client",

@@ -233,11 +233,11 @@ def fetch_all_trade_dates(
 def fetch_spot() -> pd.DataFrame:
     """全市场实时快照（akshare `stock_zh_a_spot_em`，走东财 push2）。
 
-    ⚠️ 2026-10-01 实测：东财 `push2.eastmoney.com` 在本机被网络掐断，
-       本函数会抛 `DataSourceRateLimited`（soft 档）。**它不是唯一选择** ——
-       需要可用快照时请用 `fetch_spot_fuyao()`（同花顺 fuyao REST）。
+    ⚠️ **deprecated（2026-10-01 定案）**：东财 `push2.eastmoney.com` 在本机被
+       网络掐断，本函数必然抛 `DataSourceRateLimited`（soft 档）。
+       项目已定"**不再考虑东财 push2**" → **请改用 `fetch_spot_fuyao()`**。
 
-       保留本函数是为了"换台机器/换网络可能又能用"，并让失败点集中可见。
+       保留本函数只为让失败点集中可见（而不是散在各处），不要在新代码里调用。
     """
     return akshare_client.fetch_spot()
 

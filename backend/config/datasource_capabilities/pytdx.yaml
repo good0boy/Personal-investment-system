@@ -126,6 +126,16 @@ capabilities:
     quality: "none"
     note: "❌ 无龙虎榜数据"
     priority: "-"
+  hot_list:
+    supported: false
+    quality: "none"
+    note: "❌ 无热榜数据"
+    priority: "-"
+  anomaly:
+    supported: false
+    quality: "none"
+    note: "❌ 无异动数据"
+    priority: "-" 
 
 stability:
   interface_change_risk: "low"

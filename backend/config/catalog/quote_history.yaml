@@ -606,3 +606,97 @@
   tags: [个股日线, 同花顺, fuyao]
   returns_verified: true
   returns_note: "实测 600519.SH 拉 20260901~20260930 返回 21 行（本机，2026-10-01）"
+
+# ============================================================
+# 同花顺热榜历史 / 龙虎榜（fuyao REST）—— 2026-10-01 新增
+# ============================================================
+- id: quote_history.fuyao_hot_stock_list_history
+  name: 同花顺热榜历史（按自然日）
+  sub_category: 热榜
+  datasource: fuyao
+  func_name: hot_stock_list_history
+  description: >-
+    指定**自然日**的同花顺热股榜 Top30。
+    ⚠️ **只支持一年内**（更早的日期返回 code=1003）→ 历史最多回补 1 年。
+    ⚠️ 本接口字段比实时榜少：**没有 heat / rank_change / rank_trend**。
+    💡 本地按 thscode 透视出的「个股热度排名走势」数据即是它派生而来
+  params:
+    - { name: date, type: str, default: "2026-09-29", desc: "自然日 yyyy-MM-dd（只支持一年内）" }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: rank, type: int, desc: "当日热榜名次" }
+  sample_params: { date: "2026-09-29" }
+  tags: [热榜, 同花顺, fuyao, 情绪, 核心接口]
+  returns_verified: true
+  returns_note: "实测 30 行 × 4 列（本机，2026-10-01）"
+
+- id: quote_history.fuyao_dragon_tiger_list
+  name: 龙虎榜（同花顺官方 REST）★
+  sub_category: 龙虎榜
+  datasource: fuyao
+  func_name: dragon_tiger_list
+  description: >-
+    同花顺-龙虎榜个股表，`board_type` 区分全部/机构榜/游资榜。
+    ★ 与东财 stock_lhb_detail_em 的差别：本接口给**同花顺人气排名**、
+    所属概念、机构买卖家数、游资净买等更细的字段。
+    ⚠️ `date` **只支持一年内**；显式传非交易日返回 code=1002（不自动回退）。
+    ⚠️ 无分页，一次返回当日全量
+  params:
+    - { name: date, type: str, default: "2026-09-29", desc: "交易日 yyyy-MM-dd（只支持一年内）" }
+    - { name: board_type, type: str, default: "all", desc: "榜单类型", options: ["all", "org", "hot_money"] }
+  returns:
+    - { name: trade_date, type: str, desc: "交易日" }
+    - { name: board_type, type: str, desc: "实际榜单类型" }
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: change, type: float, desc: "当日涨跌幅（小数，0.1 = +10%）" }
+    - { name: net_value, type: float, desc: "龙虎榜净买入（元）" }
+    - { name: net_rate, type: float, desc: "净买入占比（小数）" }
+    - { name: hot_rank, type: int, desc: "同花顺人气排名（越小越靠前）" }
+    - { name: buy_value, type: float, desc: "买方金额（元）" }
+    - { name: sell_value, type: float, desc: "卖方金额（元）" }
+    - { name: limit_reason, type: str, desc: "涨跌停原因" }
+    - { name: range_days, type: int, desc: "上榜区间天数（1=当日榜，3=3日榜）" }
+    - { name: org_net_value, type: float, desc: "机构净买入（元）" }
+    - { name: hot_money_net_value, type: float, desc: "游资合计净买入（元）" }
+    - { name: concept_names, type: str, desc: "所属概念（`|` 连接）" }
+  sample_params: { date: "2026-09-29", board_type: "all" }
+  tags: [龙虎榜, 同花顺, fuyao, 核心接口]
+  returns_verified: true
+  returns_note: "实测 71 行 × 16 列（本机，2026-10-01）"
+
+- id: quote_history.fuyao_dragon_tiger_hot_money
+  name: 龙虎榜游资明细（同花顺官方 REST）
+  sub_category: 龙虎榜
+  datasource: fuyao
+  func_name: dragon_tiger_hot_money
+  description: >-
+    同花顺-龙虎榜游资维度聚合榜，已展平为 **行 = 游资 × 个股**。
+    比个股榜多 4 列（成交额、游资净买占比、该游资在该股上的净买额与占比）。
+    ⚠️ 同样只支持一年内；与个股榜来自同一次响应（客户端复用缓存）
+  params:
+    - { name: date, type: str, default: "2026-09-29", desc: "交易日 yyyy-MM-dd（只支持一年内）" }
+    - { name: board_type, type: str, default: "hot_money", desc: "榜单类型", options: ["hot_money", "all", "org"] }
+  returns:
+    - { name: trade_date, type: str, desc: "交易日" }
+    - { name: hot_money_name, type: str, desc: "游资名称（如 宁波桑田路）" }
+    - { name: buying, type: float, desc: "该游资聚合净买入（元）" }
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: net_value, type: float, desc: "该股龙虎榜净买入（元）" }
+    - { name: hot_rank, type: int, desc: "同花顺人气排名" }
+    - { name: amount, type: float, desc: "成交金额（元）" }
+    - { name: hot_money_net_rate, type: float, desc: "游资净买占比（小数）" }
+    - { name: hot_money_item_net_value, type: float, desc: "该游资在该股上的净买入（元）" }
+    - { name: hot_money_item_net_rate, type: float, desc: "该游资在该股上的净买占比（小数）" }
+    - { name: limit_reason, type: str, desc: "涨跌停原因" }
+    - { name: range_days, type: int, desc: "上榜区间天数" }
+    - { name: concept_names, type: str, desc: "所属概念（`|` 连接）" }
+  sample_params: { date: "2026-09-29", board_type: "hot_money" }
+  tags: [龙虎榜, 游资, 同花顺, fuyao]
+  returns_verified: true
+  returns_note: "实测 56 行 × 21 列（本机，2026-10-01）"

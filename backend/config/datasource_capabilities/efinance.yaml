@@ -122,6 +122,16 @@ capabilities:
     quality: "fair"
     note: "龙虎榜接口可用"
     priority: "备选"
+  hot_list:
+    supported: false
+    quality: "none"
+    note: "❌ 无热榜能力"
+    priority: "-"
+  anomaly:
+    supported: false
+    quality: "none"
+    note: "❌ 无异动能力"
+    priority: "-" 
 
 stability:
   interface_change_risk: "high"

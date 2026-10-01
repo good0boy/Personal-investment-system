@@ -397,7 +397,14 @@ _FUYAO_METHODS: dict[str, str] = {
     "snapshot": "thscodes(可空=全市场分页); limit/offset",
     "prices_historical": "thscode; start/end; interval=1d; adjust=none|forward|backward",
     "tickers_list": "asset_type=a-share|a-share-index|...; limit/offset",
-    "dragon_tiger_list": "date_ms(可空=当日); type(可空=全部|机构|游资)",
+    "dragon_tiger_list": "date: yyyy-MM-dd(可空=最近交易日,限一年内); board_type=all|org|hot_money",
+    "dragon_tiger_hot_money": "date: yyyy-MM-dd(可空); board_type=all|org|hot_money（游资×个股明细）",
+    "skyrocket_list": "period=day|hour（飙升榜 Top30）",
+    "hot_stock_list": "period=day|hour（热股榜 Top30）",
+    "hot_stock_list_history": "date: yyyy-MM-dd（只支持一年内；仅 thscode/ticker/name/rank）",
+    "hot_stock_rank_trend": "thscode; start_date/end_date: yyyy-MM-dd（窗口与日期都限一年内）",
+    "anomaly_analysis_list": "tag_codes: 逗号分隔；合法值见接口说明（涨停/跌停/大涨/大跌/急拉/急跌）",
+    "anomaly_analysis_stock": "thscodes: 逗号分隔（去重前最多 50 个）",
 }
 
 #: 试跑自动翻页的硬上限 —— 防止一次点击拉几十页
@@ -422,6 +429,13 @@ _FUYAO_METHODS_PATH: dict[str, str] = {
     "prices_historical": "/api/a-share/prices/historical",
     "tickers_list": "/api/meta/tickers/list",
     "dragon_tiger_list": "/api/a-share/special-data/dragon-tiger-list",
+    "dragon_tiger_hot_money": "/api/a-share/special-data/dragon-tiger-list",
+    "skyrocket_list": "/api/a-share/special-data/skyrocket-list",
+    "hot_stock_list": "/api/a-share/special-data/hot-stock-list",
+    "hot_stock_list_history": "/api/a-share/special-data/hot-stock-list-history",
+    "hot_stock_rank_trend": "/api/a-share/special-data/hot-stock-rank-trend",
+    "anomaly_analysis_list": "/api/a-share/special-data/anomaly-analysis-list",
+    "anomaly_analysis_stock": "/api/a-share/special-data/anomaly-analysis-stock",
 }
 
 

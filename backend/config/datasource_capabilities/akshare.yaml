@@ -154,6 +154,16 @@ capabilities:
     quality: "excellent"
     note: "★ stock_lhb_detail_em 龙虎榜（走 datacenter-web，本机可用）"
     priority: "主用"
+  hot_list:
+    supported: false
+    quality: "none"
+    note: "❌ 东财人气榜走 push2，本机失效且已下架；改用 fuyao 的热榜/飙升榜"
+    priority: "-"
+  anomaly:
+    supported: false
+    quality: "none"
+    note: "❌ akshare 无盘中异动解读"
+    priority: "-" 
 
 # 稳定性评估
 stability:
@@ -170,3 +180,5 @@ pitfalls:
   - "pip 默认会装 pandas 3.0，需显式约束 pandas>=2.2,<3.0"
   - "★ 2026-10-01：东财 push2 / push2his 域名在本机被网络掐断（RemoteDisconnected），相关接口已从目录下架；同花顺（10jqka）与 push2ex.datemoney 正常"
   - "★ 熔断已按线路分组（data_source/line_groups.py）：push2 线路故障不再连坐同花顺与 push2ex"
+  - "★ 2026-10-01 定案：**不再考虑东财 push2**。能替的已用同花顺替（板块列表/历史/成分、快照、指数、资金流）；分时/分钟线/盘口**替不了**（同花顺高频接口未开放），是本项目的长期能力缺口"
+  - "★ 用 akshare 取数时优先选 `*_ths`（同花顺）后缀的接口 —— 走 10jqka 域名，本机实测全通"

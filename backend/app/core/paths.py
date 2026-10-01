@@ -69,6 +69,25 @@ UNIVERSE_DIR: Path = RAW_DIR / "universe"
 #: 基本面/财务数据（tools/backfill_fundamental.py 落盘）
 #: 结构：逐只类 {dataset}/{symbol}.parquet；全市场批量类 {dataset}/all.parquet
 FUNDAMENTAL_DIR: Path = RAW_DIR / "fundamental"
+
+# ---------- 同花顺特色数据（fuyao REST，tools/backfill_special.py 落盘）----------
+# ★ 为什么这么切目录：local_data_service 的行数统计**刻意不加 union_by_name**
+#   （加了会从 0.9s 退化到 9.4s）→ **同一个 glob 内的文件必须 schema 完全一致**。
+#   所以凡是列集不同的数据集一律分目录/分文件，绝不混在一个 glob 里。
+#: 涨跌停三池：up/down/break **各一个文件**（三池字段数 14/9/9 不同）。
+#: ⚠️ 严禁用 `limit_pool/*.parquet` 当统计 glob —— DuckDB 会直接报 schema 不一致。
+LIMIT_POOL_DIR: Path = RAW_DIR / "limit_pool"
+#: 板块指数历史：board/{industry,concept}/{thscode}.parquet（文件名含 `.TI`）
+BOARD_DIR: Path = RAW_DIR / "board"
+#: 板块清单快照（tag/thscode/name/snapshot_date）
+BOARD_CATALOG_DIR: Path = BOARD_DIR / "catalog"
+#: 热榜：history/ 与 current/ 按自然日（两者字段集不同）、rank_trend/ 按标的
+HOT_LIST_DIR: Path = RAW_DIR / "hot_list"
+#: 龙虎榜：stock/（stock_items，14 列）与 hot_money/（游资×个股，18 列）→ 必须两张表
+DRAGON_TIGER_DIR: Path = RAW_DIR / "dragon_tiger"
+#: 个股异动（接口只有当日 → 只能从今天开始按日累积）
+ANOMALY_DIR: Path = RAW_DIR / "anomaly"
+
 FACTOR_DIR: Path = DATA_DIR / "factor"
 BACKTEST_DIR: Path = DATA_DIR / "backtest"
 SWEEP_DIR: Path = DATA_DIR / "sweep"
@@ -82,6 +101,8 @@ TRADE_CALENDAR_PARQUET: Path = META_DIR / "trade_calendar.parquet"
 BACKFILL_STATE_FILE: Path = META_DIR / "backfill_state.json"
 #: 基本面数据回补的断点续传状态（tools/backfill_fundamental.py）
 BACKFILL_FUND_STATE_FILE: Path = META_DIR / "backfill_fundamental_state.json"
+#: 同花顺特色数据回补的断点续传状态（tools/backfill_special.py）
+BACKFILL_SPECIAL_STATE_FILE: Path = META_DIR / "backfill_special_state.json"
 
 # ---------- 策略与回测（阶段 2）----------
 #: 策略代码目录。刻意放在 backend/ 下（而非仓库根）：它要 `from app.*` 导入，
@@ -125,6 +146,8 @@ DEPLOY_DIR: Path = PROJECT_ROOT / "deploy"
 ALL_DIRS: tuple[Path, ...] = (
     DATA_DIR, RAW_DIR, QUOTE_DAILY_DIR, QUOTE_INDEX_DIR, UNIVERSE_DIR,
     FUNDAMENTAL_DIR,
+    LIMIT_POOL_DIR, BOARD_DIR, BOARD_CATALOG_DIR, HOT_LIST_DIR,
+    DRAGON_TIGER_DIR, ANOMALY_DIR,
     FACTOR_DIR, FACTOR_ANALYSIS_DIR, BACKTEST_DIR, SWEEP_DIR, PAPER_DIR, META_DIR, CACHE_DIR,
     LOGS_DIR,
 )

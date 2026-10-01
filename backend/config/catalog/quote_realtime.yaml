@@ -163,3 +163,196 @@
   tags: [板块, 快照, 同花顺, fuyao]
   returns_verified: false
   returns_note: "结构同 A 股快照接口（同一套 PriceSnapshotItem）"
+
+# ============================================================
+# 同花顺资金流（akshare 内置 `stock_fund_flow_*`）—— 2026-10-01 新增
+# ============================================================
+# ★ 为什么加：东财的个股/板块资金流接口走 push2/push2his，本机被网络掐断，
+#   已下架。同花顺的这三只走 10jqka 域名，实测可用。
+# ⚠️ 这三只都是**当下快照**（`symbol` 是"即时/3日排行"这类周期，不是日期），
+#   没有历史 → 不能回补，只能按日累积。
+- id: quote_realtime.ths_fund_flow_individual
+  name: 同花顺个股资金流
+  sub_category: 资金流
+  datasource: akshare
+  func_name: stock_fund_flow_individual
+  description: >-
+    同花顺-数据中心-个股资金流。替代已失效的东财 stock_individual_fund_flow。
+    ⚠️ 只有当下快照（按周期排名），无历史
+  params:
+    - { name: symbol, type: str, default: "即时", desc: "统计周期", options: ["即时", "3日排行", "5日排行", "10日排行", "20日排行"] }
+  returns:
+    - { name: 序号, type: int, desc: "序号" }
+    - { name: 股票代码, type: str, desc: "6 位代码" }
+    - { name: 股票简称, type: str, desc: "简称" }
+    - { name: 最新价, type: float, desc: "最新价" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 换手率, type: float, desc: "换手率 %" }
+    - { name: 流入资金, type: float, desc: "流入资金（元）" }
+    - { name: 流出资金, type: float, desc: "流出资金（元）" }
+    - { name: 净额, type: float, desc: "净额（元）" }
+    - { name: 成交额, type: float, desc: "成交额（元）" }
+  sample_params: { symbol: "即时" }
+  tags: [资金流, 同花顺, ths]
+  returns_verified: true
+  returns_note: "实测 10 列（本机，2026-10-01）"
+
+- id: quote_realtime.ths_fund_flow_concept
+  name: 同花顺概念资金流
+  sub_category: 资金流
+  datasource: akshare
+  func_name: stock_fund_flow_concept
+  description: 同花顺-概念板块资金流排名（替代已失效的东财板块资金流接口）
+  params:
+    - { name: symbol, type: str, default: "即时", desc: "统计周期", options: ["即时", "3日排行", "5日排行", "10日排行", "20日排行"] }
+  returns:
+    - { name: 序号, type: int, desc: "序号" }
+    - { name: 行业, type: str, desc: "概念名" }
+    - { name: 行业指数, type: float, desc: "概念指数" }
+    - { name: 行业-涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 流入资金, type: float, desc: "流入资金（元）" }
+    - { name: 流出资金, type: float, desc: "流出资金（元）" }
+    - { name: 净额, type: float, desc: "净额（元）" }
+    - { name: 公司家数, type: int, desc: "成分家数" }
+    - { name: 领涨股, type: str, desc: "领涨股" }
+    - { name: 领涨股-涨跌幅, type: float, desc: "领涨股涨跌幅 %" }
+    - { name: 当前价, type: float, desc: "领涨股当前价" }
+  sample_params: { symbol: "即时" }
+  tags: [资金流, 板块, 概念, 同花顺, ths]
+  returns_verified: true
+  returns_note: "实测 11 列（本机，2026-10-01）"
+
+- id: quote_realtime.ths_fund_flow_big_deal
+  name: 同花顺大单追踪
+  sub_category: 资金流
+  datasource: akshare
+  func_name: stock_fund_flow_big_deal
+  description: 同花顺-数据中心-资金流向-大单追踪（逐笔大单，**无入参**）
+  params: []
+  returns:
+    - { name: 成交时间, type: str, desc: "成交时间" }
+    - { name: 股票代码, type: str, desc: "6 位代码" }
+    - { name: 股票简称, type: str, desc: "简称" }
+    - { name: 成交价格, type: float, desc: "成交价" }
+    - { name: 成交量, type: float, desc: "成交量" }
+    - { name: 成交额, type: float, desc: "成交额（元）" }
+    - { name: 大单性质, type: str, desc: "买盘 / 卖盘 / 中性盘" }
+    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
+    - { name: 涨跌额, type: float, desc: "涨跌额" }
+  sample_params: {}
+  tags: [资金流, 大单, 同花顺, ths]
+  returns_verified: true
+  returns_note: "实测 9 列（本机，2026-10-01）"
+
+# ============================================================
+# 同花顺热榜 / 个股异动（fuyao REST）—— 2026-10-01 新增
+# ============================================================
+- id: quote_realtime.fuyao_skyrocket_list
+  name: 同花顺飙升榜
+  sub_category: 热榜
+  datasource: fuyao
+  func_name: skyrocket_list
+  description: >-
+    同花顺-热度排名飙升榜 Top30。`period=day` 日榜 / `hour` 小时榜。
+    ⚠️ 只有当下，无历史 → 需每日落盘累积
+  params:
+    - { name: period, type: str, default: "day", desc: "榜单周期", options: ["day", "hour"] }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: rank, type: int, desc: "当前名次" }
+    - { name: heat, type: str, desc: "热度值（上游原始字符串）" }
+    - { name: rank_change, type: int, desc: "名次变化（正=上升，可能为 null）" }
+    - { name: rank_trend, type: str, desc: "趋势 up/down/flat/unknown" }
+  sample_params: { period: "day" }
+  tags: [热榜, 同花顺, fuyao, 情绪]
+  returns_verified: true
+  returns_note: "实测 30 行 × 7 列（本机，2026-10-01）"
+
+- id: quote_realtime.fuyao_hot_stock_list
+  name: 同花顺热股榜
+  sub_category: 热榜
+  datasource: fuyao
+  func_name: hot_stock_list
+  description: 同花顺-A股热股榜 Top30。`period=day` 24 小时级别 / `hour` 小时级别。⚠️ 只有当下
+  params:
+    - { name: period, type: str, default: "day", desc: "榜单周期", options: ["day", "hour"] }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: rank, type: int, desc: "当前名次" }
+    - { name: heat, type: str, desc: "热度值" }
+    - { name: rank_change, type: int, desc: "名次变化" }
+    - { name: rank_trend, type: str, desc: "趋势 up/down/flat/unknown" }
+  sample_params: { period: "day" }
+  tags: [热榜, 同花顺, fuyao, 情绪]
+  returns_verified: true
+  returns_note: "实测 30 行 × 7 列（本机，2026-10-01）"
+
+- id: quote_realtime.fuyao_hot_stock_rank_trend
+  name: 同花顺个股热度排名走势
+  sub_category: 热榜
+  datasource: fuyao
+  func_name: hot_stock_rank_trend
+  description: >-
+    单只 A 股在自然日窗口内的热榜排名走势（点位与上游日线序列对齐）。
+    ⚠️ 窗口与日期都限制在**一年内**；每次仅一只标的。
+    💡 本地已把历史热榜透视成 rank_trend 落盘（见「本地数据」页），
+       批量需求走本地、单只核查走本接口
+  params:
+    - { name: thscode, type: str, default: "600519.SH", desc: "股票 thscode" }
+    - { name: start_date, type: str, default: "2026-09-01", desc: "起始自然日 yyyy-MM-dd" }
+    - { name: end_date, type: str, default: "2026-09-10", desc: "结束自然日 yyyy-MM-dd（≥ start_date）" }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: date, type: str, desc: "自然日 yyyy-MM-dd" }
+    - { name: date_ms, type: int, desc: "该日 00:00 毫秒时间戳" }
+    - { name: rank, type: int, desc: "当日热榜名次" }
+  sample_params: { thscode: "600519.SH", start_date: "2026-09-01", end_date: "2026-09-10" }
+  tags: [热榜, 同花顺, fuyao, 情绪]
+  returns_verified: true
+  returns_note: "实测 10 行 × 5 列（本机，2026-10-01）"
+
+- id: quote_realtime.fuyao_anomaly_analysis_list
+  name: 同花顺个股异动（列表）
+  sub_category: 异动
+  datasource: fuyao
+  func_name: anomaly_analysis_list
+  description: >-
+    当日个股异动原因列表（异动解读 + 关键词）。可按异动标签过滤。
+    ⚠️ **只有当日**（无日期参数）→ 无法回补历史，只能从接入日起累积。
+    非交易日 / 当日数据未就绪时返回空表或 code=3002
+  params:
+    - { name: tag_codes, type: str, default: "", desc: "逗号分隔的异动标签（空=全部）", options: ["", "LIMIT_UP", "LIMIT_DOWN", "SHARP_RISE", "SHARP_FALL", "RAPID_RALLY", "RAPID_DECLINE"] }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: stock_name, type: str, desc: "股票名称" }
+    - { name: tag_name, type: str, desc: "异动标签（涨停/跌停/大涨/大跌/快速拉升/快速下挫）" }
+    - { name: analysis_content, type: str, desc: "异动解读内容" }
+    - { name: keyword_list, type: str, desc: "关键词列表（数组）" }
+  sample_params: {}
+  tags: [异动, 同花顺, fuyao, 情绪]
+  returns_verified: false
+  returns_note: "⚠️ 实测当日为休市（2026-10-01 国庆）返回空表，字段集依据官方文档"
+
+- id: quote_realtime.fuyao_anomaly_analysis_stock
+  name: 同花顺个股异动（按代码批量）
+  sub_category: 异动
+  datasource: fuyao
+  func_name: anomaly_analysis_stock
+  description: 按代码批量查**当日**异动原因（逗号分隔，去重前最多 50 个）。格式合法但当日无异动的代码会被忽略
+  params:
+    - { name: thscodes, type: str, default: "600519.SH,000001.SZ", desc: "逗号分隔的 thscode（≤50）" }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: stock_name, type: str, desc: "股票名称" }
+    - { name: tag_name, type: str, desc: "异动标签" }
+    - { name: analysis_content, type: str, desc: "异动解读内容" }
+    - { name: keyword_list, type: str, desc: "关键词列表（数组）" }
+  sample_params: { thscodes: "600519.SH,000001.SZ" }
+  tags: [异动, 同花顺, fuyao, 情绪]
+  returns_verified: false
+  returns_note: "⚠️ 同上（当日休市为空），字段集依据官方文档"

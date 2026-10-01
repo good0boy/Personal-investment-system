@@ -42,6 +42,11 @@ def local_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     raw = root / "raw"
     for d in ("quote_daily", "quote_index", "universe", "fundamental"):
         (raw / d).mkdir(parents=True, exist_ok=True)
+    # 同花顺特色数据的目录（2026-10-01 新增；不补会让用例读到真实 data/）
+    for d in ("limit_pool", "board/catalog", "board/industry", "board/concept",
+              "hot_list/history", "hot_list/current", "hot_list/rank_trend",
+              "dragon_tiger/stock", "dragon_tiger/hot_money", "anomaly"):
+        (raw / d).mkdir(parents=True, exist_ok=True)
     (root / "factor" / "daily").mkdir(parents=True, exist_ok=True)
     for d in ("backtest", "sweep", "paper", "meta"):
         (root / d).mkdir(parents=True, exist_ok=True)
@@ -52,6 +57,12 @@ def local_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "QUOTE_INDEX_DIR": raw / "quote_index",
         "UNIVERSE_DIR": raw / "universe",
         "FUNDAMENTAL_DIR": raw / "fundamental",
+        "LIMIT_POOL_DIR": raw / "limit_pool",
+        "BOARD_DIR": raw / "board",
+        "BOARD_CATALOG_DIR": raw / "board" / "catalog",
+        "HOT_LIST_DIR": raw / "hot_list",
+        "DRAGON_TIGER_DIR": raw / "dragon_tiger",
+        "ANOMALY_DIR": raw / "anomaly",
         "FACTOR_DIR": root / "factor",
         "FACTOR_MANIFEST_FILE": root / "factor" / "_manifest.json",
         "BACKTEST_DIR": root / "backtest",
@@ -60,6 +71,7 @@ def local_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "META_DB": root / "meta" / "meta.db",
         "TRADE_CALENDAR_PARQUET": root / "meta" / "trade_calendar.parquet",
         "BACKFILL_FUND_STATE_FILE": root / "meta" / "backfill_fundamental_state.json",
+        "BACKFILL_SPECIAL_STATE_FILE": root / "meta" / "backfill_special_state.json",
     }.items():
         monkeypatch.setattr(svc, name, value)
 

@@ -52,6 +52,8 @@ groups:
       - limit_pool
       - fund_flow
       - dragon_tiger
+      - hot_list
+      - anomaly
 
 capabilities:
   # ---------- 行情 ----------
@@ -130,4 +132,12 @@ capabilities:
   dragon_tiger:
     label: 龙虎榜
     desc: 龙虎榜详情、营业部席位数据
+    critical: false
+  hot_list:
+    label: 人气热榜
+    desc: 个股人气榜与热度排名走势（同花顺热榜/飙升榜）
+    critical: false
+  anomaly:
+    label: 个股异动
+    desc: 盘中异动解读（涨停/跌停/急涨急跌/快速拉升回落），通常只有当日
     critical: false

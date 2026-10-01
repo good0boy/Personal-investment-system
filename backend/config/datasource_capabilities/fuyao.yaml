@@ -132,9 +132,27 @@ capabilities:
     priority: "-"
   dragon_tiger:
     supported: true
+    quality: "excellent"
+    note: >-
+      /api/a-share/special-data/dragon-tiger-list。
+      ⚠️ 参数是 **`board_type`(all|org|hot_money) + `date`(yyyy-MM-dd)** ——
+      不是 `date_ms`/`type`（旧实现照文档猜错了，恒返回 0 行，2026-10-01 修正）；
+      响应在 `data.stock_items` / `data.hot_money_items`，不是 `data.item`。
+      ★ 比东财多：同花顺人气排名、所属概念、机构买卖家数、游资净买明细。
+      ⚠️ `date` **只支持一年内**
+    priority: "主用"
+  hot_list:
+    supported: true
     quality: "good"
-    note: "/api/a-share/special-data/dragon-tiger-list（全部/机构/游资）"
-    priority: "备选"
+    note: >-
+      ★ 热股榜/飙升榜（当下，Top30）+ 历史榜（按自然日，**只支持一年内**）
+      + 个股排名走势。历史榜字段比实时榜少（无 heat）
+    priority: "主用"
+  anomaly:
+    supported: true
+    quality: "fair"
+    note: "个股异动解读 + 关键词，按标签过滤（涨停/跌停/大涨/大跌/急拉/急跌）。⚠️ **只有当日**，无历史"
+    priority: "主用"
 
 # 稳定性评估
 stability:
@@ -154,3 +172,8 @@ pitfalls:
   - "historical 窗口跨度 ≤ 10 年，且**每次只能查一只**标的"
   - "市场 dump 的 S3 预签名链接约 5 分钟过期且不可缓存，不适合做成按请求取数的接口"
   - "API Key 只走 X-api-key 请求头；绝不进日志参数，也绝不出现在任何 API 响应里"
+  - "★ 热榜历史 / 龙虎榜 / 个股排名走势 **都只支持一年内**（更早日期报 code=1003）→ 无法回补更久的历史"
+  - "★ **涨跌停三池的历史深度不对称**（2026-10-01 实测）：涨停池从 ≈2020-07 起有深历史；**跌停/炸板池只支持一年内** —— 且越界报的是 `code=1002 Invalid parameter format`（不是 1003），极具迷惑性。回补起点必须分池设置"
+  - "★ 个股异动**只有当日**（无日期参数）→ 无法回补，只能从接入那天起按日累积"
+  - "★ 高频动向（分钟线/分时）**暂未开放外部接入**（官方原文：该能力暂未开放外部接入），所以分时/分钟线在本项目仍是能力缺口"
+  - "涨停池单日可能撞满服务端 200 条上限（实测 20241008 正好 200）→ 取数必须翻页"

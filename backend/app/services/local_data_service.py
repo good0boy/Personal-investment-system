@@ -46,13 +46,20 @@ import pandas as pd
 from app.core.errors import AppError, NotFoundError
 from app.core.logging import logger
 from app.core.paths import (
+    ANOMALY_DIR,
     BACKFILL_FUND_STATE_FILE,
+    BACKFILL_SPECIAL_STATE_FILE,
     BACKTEST_DIR,
+    BOARD_CATALOG_DIR,
+    BOARD_DIR,
     DATA_DIR,
+    DRAGON_TIGER_DIR,
     FACTOR_ANALYSIS_DIR,
     FACTOR_DIR,
     FACTOR_MANIFEST_FILE,
     FUNDAMENTAL_DIR,
+    HOT_LIST_DIR,
+    LIMIT_POOL_DIR,
     META_DB,
     PAPER_DIR,
     QUOTE_DAILY_DIR,
@@ -114,6 +121,14 @@ GROUPS: tuple[dict[str, str], ...] = (
         "key": "paper",
         "label": "模拟盘",
         "desc": "调度器每日盘后落盘，与回测共用同一套成本模型。",
+    },
+    {
+        "key": "special",
+        "label": "同花顺特色数据",
+        "desc": (
+            "同花顺官方 REST（fuyao）回补落盘：涨跌停池 / 板块指数历史 / 热榜 / "
+            "龙虎榜 / 个股异动。⚠️ 各数据起点不同（见每个维度的说明）。"
+        ),
     },
     {
         "key": "meta",
@@ -693,6 +708,296 @@ def _definitions() -> tuple[Dimension, ...]:
                 sqlite=True,
             ),
             extras=(("表结构", "见 sql/schema.sql"),),
+        ),
+        # ==========================================================
+        # 同花顺特色数据（fuyao REST，tools/backfill_special.py 落盘）
+        #
+        # ⚠️ 涨跌停三池**必须各自一个维度**：它们的列集不同（14/9/9），
+        #   而 `_scan_rows` 刻意不加 union_by_name（加了 0.9s→9.4s），
+        #   同一个 glob 里混 schema 会让 DuckDB 直接报错。
+        # ==========================================================
+        Dimension(
+            key="limit_up_pool",
+            name="涨停股票池（同花顺）",
+            group="special",
+            origin="downloaded",
+            desc=(
+                "按历史交易日取涨停股池，含封单额、封板时间、连板数、涨停原因。"
+                "**东财只能取最近 1~2 日，本数据可回溯到 2020-07 中旬**"
+                "（更早日期接口返回空表，不是漏抓）。"
+            ),
+            grain="1 行 = 1 个交易日 1 只涨停股",
+            producer="tools/backfill_special.py --dataset limit_pool",
+            root=LIMIT_POOL_DIR,
+            pattern=_posix(LIMIT_POOL_DIR / "up.parquet"),
+            date_col="date",
+            sample=SampleSpec(
+                caption="按日期倒序，最新的在最前",
+                glob=_posix(LIMIT_POOL_DIR / "up.parquet"),
+                columns=(
+                    "date", "thscode", "name", "last_price", "price_change_ratio_pct",
+                    "limit_up_time", "continue_day_cnt", "seal_money", "limit_up_reason",
+                ),
+                order_by="date",
+            ),
+        ),
+        Dimension(
+            key="limit_down_pool",
+            name="跌停股票池（同花顺）",
+            group="special",
+            origin="downloaded",
+            desc="按历史交易日取跌停股池，含首次/最后跌停时间与换手率。",
+            grain="1 行 = 1 个交易日 1 只跌停股",
+            producer="tools/backfill_special.py --dataset limit_pool",
+            root=LIMIT_POOL_DIR,
+            pattern=_posix(LIMIT_POOL_DIR / "down.parquet"),
+            date_col="date",
+            sample=SampleSpec(
+                caption="按日期倒序，最新的在最前",
+                glob=_posix(LIMIT_POOL_DIR / "down.parquet"),
+                columns=(
+                    "date", "thscode", "name", "last_price",
+                    "first_limit_time", "last_limit_time", "turnover_ratio_pct",
+                ),
+                order_by="date",
+            ),
+        ),
+        Dimension(
+            key="limit_break_pool",
+            name="炸板股票池（同花顺）",
+            group="special",
+            origin="downloaded",
+            desc="按历史交易日取涨停炸板股池，含开板次数与换手率。",
+            grain="1 行 = 1 个交易日 1 只炸板股",
+            producer="tools/backfill_special.py --dataset limit_pool",
+            root=LIMIT_POOL_DIR,
+            pattern=_posix(LIMIT_POOL_DIR / "break.parquet"),
+            date_col="date",
+            sample=SampleSpec(
+                caption="按日期倒序，最新的在最前",
+                glob=_posix(LIMIT_POOL_DIR / "break.parquet"),
+                columns=(
+                    "date", "thscode", "name", "open_times",
+                    "turnover_ratio_pct", "turnover",
+                ),
+                order_by="date",
+            ),
+        ),
+        Dimension(
+            key="board_industry_history",
+            name="行业板块指数历史（同花顺）",
+            group="special",
+            origin="downloaded",
+            desc=(
+                "同花顺行业板块指数日线，一个板块一个文件。"
+                "⚠️ 各板块起始日不同（实测抽样的首个可用起点为 2021-10），"
+                "且**接口在起点早于板块首日时会静默返回空表** → 回补按候选起点逐个试。"
+            ),
+            grain="1 行 = 1 个板块 1 个交易日",
+            producer="tools/backfill_special.py --dataset board",
+            root=BOARD_DIR / "industry",
+            pattern=_posix(BOARD_DIR / "industry" / "*.parquet"),
+            date_col="date",
+            sample=SampleSpec(
+                caption="固定取 881121.TI（半导体），按日期倒序",
+                glob=_posix(BOARD_DIR / "industry" / "*.parquet"),
+                prefer="881121.TI",
+                columns=("date", "thscode", "open", "high", "low", "close", "volume", "amount"),
+                order_by="date",
+            ),
+        ),
+        Dimension(
+            key="board_concept_history",
+            name="概念板块指数历史（同花顺）",
+            group="special",
+            origin="downloaded",
+            desc=(
+                "同花顺概念板块指数日线，一个板块一个文件。"
+                "⚠️ 概念板块的起始日差异更大（实测有到 2023 才有数据的），"
+                "用本页的覆盖区间看单个板块的实际范围。"
+            ),
+            grain="1 行 = 1 个板块 1 个交易日",
+            producer="tools/backfill_special.py --dataset board",
+            root=BOARD_DIR / "concept",
+            pattern=_posix(BOARD_DIR / "concept" / "*.parquet"),
+            date_col="date",
+            sample=SampleSpec(
+                caption="固定取 886042.TI（新能源车），按日期倒序",
+                glob=_posix(BOARD_DIR / "concept" / "*.parquet"),
+                prefer="886042.TI",
+                columns=("date", "thscode", "open", "high", "low", "close", "volume", "amount"),
+                order_by="date",
+            ),
+        ),
+        Dimension(
+            key="board_catalog",
+            name="同花顺板块清单（快照）",
+            group="special",
+            origin="downloaded",
+            desc=(
+                "同花顺行业+概念板块目录快照（tag/thscode/name）。"
+                "**以中文名为键**与 akshare 的 `*_ths` 接口对接。"
+            ),
+            grain="1 行 = 1 个板块",
+            producer="tools/backfill_special.py --dataset board",
+            root=BOARD_CATALOG_DIR,
+            pattern=_posix(BOARD_CATALOG_DIR / "boards.parquet"),
+            date_col="snapshot_date",
+            date_label="快照日",
+            sample=SampleSpec(
+                caption="板块清单，按代码升序",
+                glob=_posix(BOARD_CATALOG_DIR / "boards.parquet"),
+                columns=("tag", "thscode", "name", "snapshot_date"),
+                order_by="thscode",
+                desc=False,
+            ),
+        ),
+        Dimension(
+            key="hot_list_history",
+            name="同花顺热榜历史（按自然日）",
+            group="special",
+            origin="downloaded",
+            desc=(
+                "按自然日的热股榜 Top30。"
+                "⚠️ **接口只支持一年内** → 本数据最多覆盖最近一年，更早的拿不到。"
+            ),
+            grain="1 行 = 1 个自然日 1 个榜单名次",
+            producer="tools/backfill_special.py --dataset hot_list",
+            root=HOT_LIST_DIR / "history",
+            pattern=_posix(HOT_LIST_DIR / "history" / "*.parquet"),
+            date_col="date",
+            sample=SampleSpec(
+                caption="最新一天的历史榜，按名次升序",
+                glob=_posix(HOT_LIST_DIR / "history" / "*.parquet"),
+                latest=True,
+                columns=("date", "thscode", "name", "rank"),
+                order_by="rank",
+                desc=False,
+            ),
+        ),
+        Dimension(
+            key="hot_list_current",
+            name="同花顺热榜快照（每日）",
+            group="special",
+            origin="downloaded",
+            desc=(
+                "飙升榜 + 热股榜的每日快照（带热度值与名次变化）。"
+                "⚠️ 这两个榜**只有当下、无历史接口** → 只能从接入那天起按日累积。"
+            ),
+            grain="1 行 = 1 个自然日 1 个榜单 1 个名次",
+            producer="tools/backfill_special.py --dataset hot_list",
+            root=HOT_LIST_DIR / "current",
+            pattern=_posix(HOT_LIST_DIR / "current" / "*.parquet"),
+            date_col="date",
+            sample=SampleSpec(
+                caption="最新一天的实时榜快照，按名次升序",
+                glob=_posix(HOT_LIST_DIR / "current" / "*.parquet"),
+                latest=True,
+                columns=(
+                    "date", "list_type", "period", "thscode", "name",
+                    "rank", "heat", "rank_change", "rank_trend",
+                ),
+                order_by="rank",
+                desc=False,
+            ),
+        ),
+        Dimension(
+            key="hot_rank_trend",
+            name="个股热度排名走势（本地派生）",
+            group="special",
+            origin="derived",
+            desc=(
+                "由热榜历史**本地透视**得到（省掉数千次按标的的接口调用）。"
+                "⚠️ 接口版 `hot_stock_rank_trend` 只支持一年窗口，所以本数据也最多一年。"
+            ),
+            grain="1 行 = 1 只标的 1 个自然日",
+            producer="tools/backfill_special.py（由 hot_list/history 透视）",
+            root=HOT_LIST_DIR / "rank_trend",
+            pattern=_posix(HOT_LIST_DIR / "rank_trend" / "*.parquet"),
+            date_col="date",
+            sample=SampleSpec(
+                caption="固定取 sh.600519 对应的 600519.SH，按日期倒序",
+                glob=_posix(HOT_LIST_DIR / "rank_trend" / "*.parquet"),
+                prefer="600519.SH",
+                columns=("date", "thscode", "rank"),
+                order_by="date",
+            ),
+        ),
+        Dimension(
+            key="dragon_tiger",
+            name="龙虎榜个股表（同花顺）",
+            group="special",
+            origin="downloaded",
+            desc=(
+                "按交易日的龙虎榜个股榜，含同花顺人气排名、所属概念、机构净买、"
+                "游资净买。⚠️ 接口只支持一年内。"
+            ),
+            grain="1 行 = 1 个交易日 1 只上榜个股",
+            producer="tools/backfill_special.py --dataset dragon_tiger",
+            root=DRAGON_TIGER_DIR / "stock",
+            pattern=_posix(DRAGON_TIGER_DIR / "stock" / "*.parquet"),
+            date_col="trade_date",
+            date_label="覆盖（交易日）",
+            sample=SampleSpec(
+                caption="最新一个交易日的榜，按净买额倒序",
+                glob=_posix(DRAGON_TIGER_DIR / "stock" / "*.parquet"),
+                latest=True,
+                columns=(
+                    "trade_date", "thscode", "name", "hot_rank", "net_value",
+                    "org_net_value", "hot_money_net_value", "limit_reason", "concept_names",
+                ),
+                order_by="net_value",
+            ),
+        ),
+        Dimension(
+            key="dragon_tiger_hot_money",
+            name="龙虎榜游资明细（同花顺）",
+            group="special",
+            origin="downloaded",
+            desc=(
+                "龙虎榜的游资维度，已展平为 行 = 游资 × 个股。"
+                "⚠️ 与个股表字段集不同（多 amount / 游资净买占比等），所以**单独一个目录**。"
+            ),
+            grain="1 行 = 1 个交易日 1 个游资 1 只个股",
+            producer="tools/backfill_special.py --dataset dragon_tiger",
+            root=DRAGON_TIGER_DIR / "hot_money",
+            pattern=_posix(DRAGON_TIGER_DIR / "hot_money" / "*.parquet"),
+            date_col="trade_date",
+            date_label="覆盖（交易日）",
+            sample=SampleSpec(
+                caption="最新一个交易日的游资明细，按个股净买额倒序",
+                glob=_posix(DRAGON_TIGER_DIR / "hot_money" / "*.parquet"),
+                latest=True,
+                columns=(
+                    "trade_date", "hot_money_name", "buying", "thscode", "name",
+                    "hot_money_item_net_value", "limit_reason",
+                ),
+                order_by="net_value",
+            ),
+        ),
+        Dimension(
+            key="anomaly",
+            name="个股异动（同花顺，每日快照）",
+            group="special",
+            origin="downloaded",
+            desc=(
+                "盘中异动解读 + 关键词，按异动标签（涨停/跌停/大涨/大跌/急拉/急跌）区分。"
+                "⚠️ **接口只有当日**（无日期参数）→ 无法回补历史，只能从接入日起按日累积。"
+            ),
+            grain="1 行 = 1 个自然日 1 条异动",
+            producer="tools/backfill_special.py --dataset anomaly",
+            root=ANOMALY_DIR,
+            pattern=_posix(ANOMALY_DIR / "*.parquet"),
+            date_col="date",
+            sample=SampleSpec(
+                caption="最新一天的异动，按代码排序",
+                glob=_posix(ANOMALY_DIR / "*.parquet"),
+                latest=True,
+                columns=("date", "tag_name", "thscode", "stock_name", "analysis_content", "keywords"),
+                order_by="thscode",
+                desc=False,
+            ),
+            extras=(("状态文件", _posix(BACKFILL_SPECIAL_STATE_FILE)),),
         ),
     )
 

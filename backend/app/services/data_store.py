@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import threading
 from bisect import bisect_left
@@ -37,11 +38,17 @@ import pandas as pd
 from app.core.errors import AppError, DataNotReadyError, ReadUntilViolation, StorageError
 from app.core.logging import logger
 from app.core.paths import (
+    ANOMALY_DIR,
     BACKTEST_DIR,
+    BOARD_CATALOG_DIR,
+    BOARD_DIR,
     CACHE_DIR,
     DATA_DIR,
+    DRAGON_TIGER_DIR,
     FACTOR_DIR,
     FUNDAMENTAL_DIR,
+    HOT_LIST_DIR,
+    LIMIT_POOL_DIR,
     META_DB,
     META_DIR,
     PAPER_DIR,
@@ -296,7 +303,12 @@ def write_parquet(
         return {"path": str(path), "rows": 0, "written": False}
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # ★ 临时文件名必须**带进程/线程标识**：单文件累积型数据集（如涨跌停池）
+    #   会被多个回补线程同时写，共用一个 `<path>.tmp` 时两个线程往同一个
+    #   文件里写 → 产出损坏的 parquet。
+    #   实测（2026-10-01）：4 线程并发写 limit_pool/up.parquet，出现
+    #   `Couldn't deserialize thrift: Invalid data` + 19 个失败项。
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
 
     out = df.copy()
     if dedup_keys:
@@ -320,14 +332,35 @@ def write_parquet(
 
 
 def merge_parquet(df: pd.DataFrame, path: Path, keys: Sequence[str]) -> dict[str, Any]:
-    """增量合并写入：读旧文件 → 按 keys 去重 → 写回。"""
-    if path.exists():
-        try:
-            old = pd.read_parquet(path)
-            df = pd.concat([old, df], ignore_index=True)
-        except Exception as exc:
-            logger.warning(f"读取旧 Parquet 失败，将整体覆盖：{path} —— {exc}")
-    return write_parquet(df, path, dedup_keys=keys)
+    """增量合并写入：读旧文件 → 按 keys 去重 → 写回。
+
+    ★ **必须按路径串行**：这是"读-改-写"，两个线程同时合并同一个文件时，
+      双方都读到旧内容、各自写回 → **后写的覆盖先写的，先写的那批静默丢失**
+      （不是报错，是丢数据，比报错危险）。实测踩过：4 线程并发回补涨跌停池。
+    """
+    with _path_write_lock(path):
+        if path.exists():
+            try:
+                old = pd.read_parquet(path)
+                df = pd.concat([old, df], ignore_index=True)
+            except Exception as exc:
+                logger.warning(f"读取旧 Parquet 失败，将整体覆盖：{path} —— {exc}")
+        return write_parquet(df, path, dedup_keys=keys)
+
+
+#: 按文件路径的写锁（`merge_parquet` 的读-改-写必须串行）
+_path_locks: dict[str, threading.Lock] = {}
+_path_locks_guard = threading.Lock()
+
+
+def _path_write_lock(path: Path) -> threading.Lock:
+    key = str(path)
+    with _path_locks_guard:
+        lock = _path_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _path_locks[key] = lock
+        return lock
 
 
 # ---------- 行情 ----------
@@ -1088,3 +1121,330 @@ def storage_stats() -> dict[str, Any]:
         "meta_db_human": _human(meta_db_bytes),
         "trade_calendar_ready": TRADE_CALENDAR_PARQUET.exists(),
     }
+
+
+# ======================================================================
+# 同花顺特色数据（fuyao REST）
+#
+# ★ 三条设计约束（都不是可选的）：
+#   1. **每个读取入口无条件过时间锁** —— 项目红线：不允许读到"未来"的数据。
+#      `_read_dated_frame` 是过锁的**唯一实现点**，新入口一律复用它，
+#      不要自己写 `if end_date: check()`（历史 bug：end_date=None 时校验被整个跳过）。
+#   2. **同一个 glob 内 schema 必须一致** —— `local_data_service._scan_rows`
+#      刻意不加 `union_by_name`（加了 0.9s → 9.4s）。所以列集不同的数据集
+#      （涨跌停三池、龙虎榜两张表）**必须分文件/分目录**。
+#   3. 写入侧由调用方（`tools/backfill_special.py`）用固定列集 + `reindex` 兜底，
+#      本模块不做 schema 校验（与既有 save_* 一致）。
+# ======================================================================
+
+_LIMIT_POOL_KINDS = ("up", "down", "break")
+_BOARD_KINDS = ("industry", "concept")
+
+
+def _has_files(pattern: str) -> bool:
+    """pattern 是否匹配到至少一个文件。
+
+    ⚠️ DuckDB 对"零文件匹配"的 glob 直接报错（不是返回空表），
+       所以每个读取入口都要先过这道门。
+    """
+    p = Path(pattern)
+    if "*" not in pattern and "?" not in pattern:
+        return p.exists()
+    return any(p.parent.glob(p.name))
+
+
+def _read_dated_frame(
+    pattern: str,
+    start_date: str | None,
+    end_date: str | None,
+    *,
+    date_col: str = "date",
+    columns: Sequence[str] | None = None,
+    where: str = "",
+    params: Sequence[Any] = (),
+    order_by: str | None = None,
+) -> pd.DataFrame:
+    """★ **所有新数据集读取的过锁唯一实现点**。
+
+    过锁语义与 `read_quotes` 完全一致：`min(显式锁, 今天)` 为上界；
+    `end_date=None` 也**收敛**（不是"不校验"）；显式未来区间抛
+    `ReadUntilViolation`（由 `_apply_read_until` 抛出）。
+    """
+    start, end = _apply_read_until(start_date, end_date)   # ← 唯一过锁点
+    if not _has_files(pattern):
+        return pd.DataFrame()
+
+    conds: list[str] = []
+    args: list[Any] = list(params)
+    if start:
+        conds.append(f'"{date_col}" >= ?')
+        args.append(pd.Timestamp(start))
+    if end:
+        conds.append(f'"{date_col}" <= ?')
+        args.append(pd.Timestamp(end))
+    if where:
+        conds.append(where)
+
+    select = "*" if not columns else ", ".join(f'"{c}"' for c in columns)
+    sql = f"SELECT {select} FROM read_parquet('{pattern}')"
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    if order_by:
+        sql += f" ORDER BY {order_by}"
+    return query_duck(sql, args)
+
+
+# ---------- 涨跌停池 ----------
+def limit_pool_path(pool: str) -> Path:
+    """涨跌停池文件路径 —— **唯一实现**。pool ∈ up|down|break。"""
+    if pool not in _LIMIT_POOL_KINDS:
+        raise StorageError(f"未知的涨跌停池：{pool!r}（可选 {list(_LIMIT_POOL_KINDS)}）")
+    return LIMIT_POOL_DIR / f"{pool}.parquet"
+
+
+def save_limit_pool(df: pd.DataFrame, pool: str) -> dict[str, Any]:
+    """保存涨跌停池（**单文件累积**，按 [date, thscode] 去重合并）。
+
+    ⚠️ 三池 schema 不同（14/9/9 列）→ 各自一个文件。**绝不要**把它们
+       合并成一个目录 glob，`local_data_service` 会因 schema 不一致报错。
+    """
+    return merge_parquet(df, limit_pool_path(pool), ["date", "thscode"])
+
+
+def read_limit_pool(
+    pool: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    *,
+    columns: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """读取涨跌停池。★ 无条件过时间锁。"""
+    return _read_dated_frame(
+        limit_pool_path(pool).as_posix(),
+        start_date,
+        end_date,
+        columns=columns,
+        order_by="date",
+    )
+
+
+# ---------- 板块指数历史 ----------
+def board_path(tag: str, thscode: str) -> Path:
+    """板块历史文件路径 —— **唯一实现**。tag ∈ industry|concept。"""
+    if tag not in _BOARD_KINDS:
+        raise StorageError(f"未知的板块类别：{tag!r}（可选 {list(_BOARD_KINDS)}）")
+    return BOARD_DIR / tag / f"{_safe_name(thscode)}.parquet"
+
+
+def board_history_glob(tag: str) -> str:
+    """某类板块历史的 glob（**唯一实现**）。"""
+    if tag not in _BOARD_KINDS:
+        raise StorageError(f"未知的板块类别：{tag!r}（可选 {list(_BOARD_KINDS)}）")
+    return f"{(BOARD_DIR / tag).as_posix()}/*.parquet"
+
+
+def save_board_history(df: pd.DataFrame, tag: str, thscode: str) -> dict[str, Any]:
+    """保存单个板块的历史 K 线（按 date 去重合并）。"""
+    return merge_parquet(df, board_path(tag, thscode), ["date"])
+
+
+def read_board_history(
+    tag: str,
+    thscode: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """读单个板块的历史。★ 无条件过时间锁。"""
+    return _read_dated_frame(
+        board_path(tag, thscode).as_posix(), start_date, end_date, order_by="date"
+    )
+
+
+def read_board_history_all(
+    tag: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    *,
+    columns: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """读某类**全部**板块的历史（截面研究用）。★ 无条件过时间锁。"""
+    return _read_dated_frame(
+        board_history_glob(tag),
+        start_date,
+        end_date,
+        columns=columns,
+        order_by="date",
+    )
+
+
+def save_board_catalog(df: pd.DataFrame) -> dict[str, Any]:
+    """保存板块清单快照（按 [tag, thscode] 去重；名称变更以新覆盖旧）。"""
+    return merge_parquet(df, BOARD_CATALOG_DIR / "boards.parquet", ["tag", "thscode"])
+
+
+def read_board_catalog(tag: str | None = None) -> pd.DataFrame:
+    """读板块清单。
+
+    ★ 这是"当前快照"，本身无时间维度，但仍过 `_apply_read_until(None, None)`
+      收上界后按 `snapshot_date` 过滤 —— 防止有人把未来快照写进来被读到。
+    """
+    path = BOARD_CATALOG_DIR / "boards.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    _, end = _apply_read_until(None, None)
+    conds, args = [], []
+    if end:
+        conds.append("snapshot_date <= ?")
+        args.append(pd.Timestamp(end))
+    if tag:
+        conds.append("tag = ?")
+        args.append(tag)
+    sql = f"SELECT * FROM read_parquet('{path.as_posix()}')"
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    return query_duck(sql, args)
+
+
+# ---------- 热榜 ----------
+def hot_list_dir(kind: str) -> Path:
+    """热榜子目录 —— **唯一实现**。kind ∈ history|current|rank_trend。"""
+    if kind not in ("history", "current", "rank_trend"):
+        raise StorageError(
+            f"未知的热榜类型：{kind!r}（可选 history|current|rank_trend）"
+        )
+    return HOT_LIST_DIR / kind
+
+
+def save_hot_list_history(df: pd.DataFrame, day: str) -> dict[str, Any]:
+    """保存某自然日的历史热榜（整文件重写，按 [date, thscode] 去重）。"""
+    return write_parquet(
+        df, hot_list_dir("history") / f"{day}.parquet", dedup_keys=["date", "thscode"]
+    )
+
+
+def read_hot_list_history(
+    start_date: str | None = None, end_date: str | None = None
+) -> pd.DataFrame:
+    """读历史热榜（按自然日累积）。★ 无条件过时间锁。"""
+    return _read_dated_frame(
+        f"{hot_list_dir('history').as_posix()}/*.parquet",
+        start_date,
+        end_date,
+        order_by="date",
+    )
+
+
+def save_hot_list_current(df: pd.DataFrame, day: str) -> dict[str, Any]:
+    """保存某日的实时榜快照（飙升榜 + 热股榜）。"""
+    return write_parquet(
+        df,
+        hot_list_dir("current") / f"{day}.parquet",
+        dedup_keys=["date", "list_type", "period", "thscode"],
+    )
+
+
+def read_hot_list_current(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    *,
+    list_type: str | None = None,
+) -> pd.DataFrame:
+    """读实时榜快照。★ 无条件过时间锁。"""
+    return _read_dated_frame(
+        f"{hot_list_dir('current').as_posix()}/*.parquet",
+        start_date,
+        end_date,
+        where="list_type = ?" if list_type else "",
+        params=(list_type,) if list_type else (),
+        order_by="date",
+    )
+
+
+def save_hot_rank_trend(df: pd.DataFrame, thscode: str) -> dict[str, Any]:
+    """保存个股热度排名走势（本地由历史榜透视派生，按 date 去重合并）。"""
+    return merge_parquet(
+        df, hot_list_dir("rank_trend") / f"{_safe_name(thscode)}.parquet", ["date"]
+    )
+
+
+def read_hot_rank_trend(
+    thscode: str, start_date: str | None = None, end_date: str | None = None
+) -> pd.DataFrame:
+    """读个股热度排名走势。★ 无条件过时间锁。"""
+    return _read_dated_frame(
+        (hot_list_dir("rank_trend") / f"{_safe_name(thscode)}.parquet").as_posix(),
+        start_date,
+        end_date,
+        order_by="date",
+    )
+
+
+# ---------- 龙虎榜 ----------
+def dragon_tiger_path(day: str, *, hot_money: bool = False) -> Path:
+    """龙虎榜文件路径 —— **唯一实现**。两张表字段集不同（14 / 18 列）→ 必须分目录。"""
+    sub = "hot_money" if hot_money else "stock"
+    return DRAGON_TIGER_DIR / sub / f"{day}.parquet"
+
+
+def save_dragon_tiger(df: pd.DataFrame, day: str) -> dict[str, Any]:
+    """保存龙虎榜个股表（整文件重写，按 [trade_date, thscode] 去重）。"""
+    return write_parquet(
+        df, dragon_tiger_path(day), dedup_keys=["trade_date", "thscode"]
+    )
+
+
+def read_dragon_tiger(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    *,
+    board_type: str | None = None,
+) -> pd.DataFrame:
+    """读龙虎榜个股表。★ 无条件过时间锁（按 trade_date 截断）。"""
+    return _read_dated_frame(
+        f"{(DRAGON_TIGER_DIR / 'stock').as_posix()}/*.parquet",
+        start_date,
+        end_date,
+        date_col="trade_date",
+        where="board_type = ?" if board_type else "",
+        params=(board_type,) if board_type else (),
+        order_by="trade_date",
+    )
+
+
+def save_dragon_tiger_hot_money(df: pd.DataFrame, day: str) -> dict[str, Any]:
+    """保存龙虎榜游资明细（行 = 游资 × 个股）。"""
+    return write_parquet(
+        df,
+        dragon_tiger_path(day, hot_money=True),
+        dedup_keys=["trade_date", "hot_money_name", "thscode"],
+    )
+
+
+def read_dragon_tiger_hot_money(
+    start_date: str | None = None, end_date: str | None = None
+) -> pd.DataFrame:
+    """读龙虎榜游资明细。★ 无条件过时间锁。"""
+    return _read_dated_frame(
+        f"{(DRAGON_TIGER_DIR / 'hot_money').as_posix()}/*.parquet",
+        start_date,
+        end_date,
+        date_col="trade_date",
+        order_by="trade_date",
+    )
+
+
+# ---------- 个股异动 ----------
+def save_anomaly(df: pd.DataFrame, day: str) -> dict[str, Any]:
+    """保存某日的个股异动（接口只有当日 → 只能按日累积）。"""
+    return write_parquet(
+        df, ANOMALY_DIR / f"{day}.parquet", dedup_keys=["date", "tag_name", "thscode"]
+    )
+
+
+def read_anomaly(
+    start_date: str | None = None, end_date: str | None = None
+) -> pd.DataFrame:
+    """读个股异动。★ 无条件过时间锁。"""
+    return _read_dated_frame(
+        f"{ANOMALY_DIR.as_posix()}/*.parquet", start_date, end_date, order_by="date"
+    )
