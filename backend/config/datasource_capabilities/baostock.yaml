@@ -105,6 +105,11 @@ capabilities:
     quality: "none"
     note: "无资金流数据"
     priority: "-"
+  limit_pool:
+    supported: false
+    quality: "none"
+    note: "❌ baostock 无涨停板数据（只有日线 OHLCV + isST + 停牌标记）"
+    priority: "-"
   dragon_tiger:
     supported: false
     quality: "none"

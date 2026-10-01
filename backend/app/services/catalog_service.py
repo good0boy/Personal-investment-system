@@ -39,7 +39,7 @@ from app.core.errors import (
 )
 from app.core.logging import logger
 from app.core.paths import CATALOG_CATEGORY_FILES
-from app.services.data_source import akshare_client, baostock_client
+from app.services.data_source import akshare_client, baostock_client, fuyao_client
 from app.services.data_source.base import TTLCache
 
 
@@ -108,10 +108,18 @@ _SYMBOL_PATTERNS: dict[str, str] = {
     "lower_prefix": r"^(sh|sz)\d{6}$",          # sh600519
     "report_period": r"^(最新|\d{8})$",          # 20230930 / 最新
     "baostock": r"^(sh|sz)\.\d{6}$",            # sh.600519
+    # 同花顺 thscode（fuyao REST）—— 股票/交易所指数
+    "thscode": r"^\d{6}\.(SH|SZ|BJ)$",          # 600519.SH
+    # 同花顺 thscode 列表（逗号分隔，如 600519.SH,000001.SZ）
+    "thscode_list": r"^\d{6}\.(SH|SZ|BJ)(,\d{6}\.(SH|SZ|BJ))*$",
+    # 同花顺板块指数（行业/概念），与交易所无关，后缀固定 .TI
+    "board_thscode": r"^\d{6}\.TI$",            # 886042.TI
+    # 中文名入参（同花顺板块接口的 symbol 就是板块中文名，无法穷举）
+    "chinese_name": r"^\S+$",
 }
 
 #: 视为"股票代码"的参数名（只有这些名按 symbol_format 校验）
-SYMBOL_PARAM_NAMES = {"symbol", "stock", "code", "ts_code"}
+SYMBOL_PARAM_NAMES = {"symbol", "stock", "code", "ts_code", "thscode", "thscodes"}
 
 
 def _parse_item(raw: dict[str, Any], category: str) -> CatalogItem:
@@ -212,12 +220,39 @@ def tree() -> dict[str, Any]:
 
 
 def gen_sample_code(item: CatalogItem) -> str:
-    """按数据源生成可直接运行的示例代码（不手写，避免过时）。"""
-    args = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in item.sample_params.items())
+    """按数据源生成可直接运行的示例代码（不手写，避免过时）。
+
+    ⚠️ 必须按 `datasource` 分支：fuyao 是**同花顺官方 REST**，不是 akshare 的
+       函数。之前只区分了 baostock / 其他，导致 fuyao 条目生成出
+       `import akshare as ak` + `ak.limit_up_pool(...)` 这种**跑不起来**的示例
+       （`akshare` 里根本没有 `limit_up_pool`）—— 页面上的代码示例不能是假的。
+    """
+    args = ", ".join(
+        f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in item.sample_params.items()
+    )
     if item.datasource == "baostock":
         return (
             "from app.services.data_source import baostock_client\n\n"
             f"df = baostock_client.{item.func_name}({args})\nprint(df.head())"
+        )
+    if item.datasource == "fuyao":
+        base = settings.datasource.fuyao.base_url.rstrip("/")
+        path = _FUYAO_METHODS_PATH.get(item.func_name, "")
+        return (
+            "# 同花顺官方 REST（需要 .env 里的 FUYAO_API_KEY）\n"
+            "# 也可直接用封装好的客户端（推荐，自带缓存/限流/熔断）：\n"
+            "from app.services.data_source import fuyao_client\n\n"
+            f"df = fuyao_client.{item.func_name}({args})\nprint(df.head())\n\n"
+            "# ---- 等价的裸 HTTP 调用 ----\n"
+            "import httpx, os\n\n"
+            f"resp = httpx.get(\n"
+            f'    "{base}{path}",\n'
+            f"    params={json.dumps(item.sample_params, ensure_ascii=False)},\n"
+            '    headers={"X-api-key": os.environ["FUYAO_API_KEY"]},\n'
+            ")\n"
+            'body = resp.json()          # ⚠️ 业务错误也是 HTTP 200，必须看 body["code"]\n'
+            'assert body["code"] == 0, body["message"]\n'
+            'df = __import__("pandas").DataFrame(body["data"]["item"])\nprint(df.head())'
         )
     return f"import akshare as ak\n\ndf = ak.{item.func_name}({args})\nprint(df.head())"
 
@@ -296,6 +331,20 @@ def _coerce_param(item: CatalogItem, p: dict[str, Any], value: Any) -> Any:
         if str(value).lower() in ("false", "0", "no", "否"):
             return False
         raise InvalidParamError(f"参数 {declared_name} 应为布尔值，收到 {value!r}")
+    if ptype == "date_ms":
+        # fuyao 的时间参数是**毫秒级 Unix 时间戳**，但让人手输毫秒是不人道的。
+        # 这里接受 YYYYMMDD / YYYY-MM-DD / 毫秒戳三种写法，统一转毫秒。
+        # ⚠️ 空值已在函数开头处理（返回 ""），到不了这里。
+        from app.services.data_source.fuyao_client import (  # noqa: PLC0415
+            date_to_ms,
+        )
+
+        try:
+            return date_to_ms(str(value))
+        except Exception as exc:
+            raise InvalidParamError(
+                f"参数 {declared_name} 应为 YYYYMMDD / YYYY-MM-DD / 毫秒时间戳，收到 {value!r}"
+            ) from exc
     return str(value)
 
 
@@ -319,6 +368,10 @@ def _validate_symbol(item: CatalogItem, name: str, value: Any) -> None:
             "lower_prefix": "sh600519",
             "report_period": "20230930 或 最新",
             "baostock": "sh.600519",
+            "thscode": "600519.SH",
+            "thscode_list": "600519.SH,000001.SZ",
+            "board_thscode": "886042.TI",
+            "chinese_name": "半导体 / 白酒概念",
         }.get(item.symbol_format, "")
         raise InvalidParamError(
             f"参数 {name} 的格式应为 {item.symbol_format}（示例：{example}），收到 {value!r}"
@@ -327,6 +380,99 @@ def _validate_symbol(item: CatalogItem, name: str, value: Any) -> None:
 
 def _run_akshare(item: CatalogItem, params: dict[str, Any]) -> Any:
     return akshare_client.call(item.func_name, params)
+
+
+#: fuyao 可试跑的方法白名单（func_name -> 签名说明）。
+#: ★ 用**白名单**而不是反射任意同名方法：这个客户端有 login/logout/health/
+#:   _get 等非数据方法，反射会让"目录里写错一个名字"变成"调到了内部方法"。
+_FUYAO_METHODS: dict[str, str] = {
+    "limit_up_pool": "date_ms(可空=当日); page/size(≤200); sort_field/sort_dir",
+    "limit_down_pool": "date_ms(可空=当日); page/size(≤200); sort_field/sort_dir",
+    "limit_break_pool": "date_ms(可空=当日); page/size(≤200); sort_field/sort_dir",
+    "limit_up_ladder": "（无参数；返回近 30 个交易日，已展平为 行=板位×标的）",
+    "index_list": "tag: industry|cn_concept|region|tszs",
+    "index_constituents": "thscode: 886042.TI（板块指数代码）",
+    "index_snapshot": "thscodes: 逗号分隔（必须传，不支持枚举全市场）",
+    "index_historical": "thscode; start/end(YYYYMMDD 或毫秒); interval=1d",
+    "snapshot": "thscodes(可空=全市场分页); limit/offset",
+    "prices_historical": "thscode; start/end; interval=1d; adjust=none|forward|backward",
+    "tickers_list": "asset_type=a-share|a-share-index|...; limit/offset",
+    "dragon_tiger_list": "date_ms(可空=当日); type(可空=全部|机构|游资)",
+}
+
+#: 试跑自动翻页的硬上限 —— 防止一次点击拉几十页
+_FUYAO_MAX_PAGES = 5
+
+#: 服务端允许的单页上限。**只有请求了这个值才自动翻页** ——
+#: 否则用户填 size=10 会拿到 50 行（5 页 ×10），与"我要 10 条"的直觉相悖。
+_FUYAO_PAGE_SIZE = 200
+
+#: fuyao 方法 → REST 端点路径。只用于 `gen_sample_code()` 生成"等价裸 HTTP 调用"。
+#: ⚠️ 必须与 `fuyao_client` 里方法实际请求的 path 保持一致（有测试钉着）。
+_FUYAO_METHODS_PATH: dict[str, str] = {
+    "limit_up_pool": "/api/a-share/special-data/limit-up-pool",
+    "limit_down_pool": "/api/a-share/special-data/limit-down-pool",
+    "limit_break_pool": "/api/a-share/special-data/limit-break-pool",
+    "limit_up_ladder": "/api/a-share/special-data/limit-up-ladder",
+    "index_list": "/api/a-share-index/catalog/ths-index-list",
+    "index_constituents": "/api/a-share-index/constituents/ths-stock-list",
+    "index_snapshot": "/api/a-share-index/prices/snapshot",
+    "index_historical": "/api/a-share-index/prices/historical",
+    "snapshot": "/api/a-share/prices/snapshot",
+    "prices_historical": "/api/a-share/prices/historical",
+    "tickers_list": "/api/meta/tickers/list",
+    "dragon_tiger_list": "/api/a-share/special-data/dragon-tiger-list",
+}
+
+
+def _run_fuyao(item: CatalogItem, params: dict[str, Any]) -> Any:
+    """fuyao 试跑执行器。
+
+    ★ 自动翻页只在**请求了服务端最大页**（`size`/`limit` = 200）时发生：
+      涨跌停池一天可能有 200+ 条，只取第一页会给出"涨停只有 200 只"这种
+      误导性结果。反之若用户明确要了 10 条，就老老实实给 10 条。
+      翻页上限 `_FUYAO_MAX_PAGES` 页（末尾 `_frame_to_payload` 还会再截 100 行）。
+    """
+    if item.func_name not in _FUYAO_METHODS:
+        raise InvalidParamError(
+            f"fuyao 方法 {item.func_name} 不在可试跑白名单中"
+            f"（可试跑：{sorted(_FUYAO_METHODS)}）"
+        )
+    fn = getattr(fuyao_client, item.func_name)
+
+    # 认两种分页风格：size/page（涨跌停系列）与 limit/offset（快照/代码表）
+    if "size" in params:
+        page_key, page_size = "page", int(params.get("size") or 0)
+    elif "limit" in params:
+        page_key, page_size = "offset", int(params.get("limit") or 0)
+    else:
+        return fn(**params)
+
+    if page_size != _FUYAO_PAGE_SIZE:
+        # 用户要的是"一页的具体条数"，不替他加量
+        return fn(**params)
+
+    frames: list[Any] = []
+    requested: dict[str, Any] = dict(params)
+    for page in range(1, _FUYAO_MAX_PAGES + 1):
+        requested[page_key] = page
+        df = fn(**requested)
+        if df is None or df.empty:
+            break
+        frames.append(df)
+        if len(df) < page_size:
+            break
+    else:
+        logger.warning(
+            f"fuyao 试跑 {item.func_name} 达到翻页上限 {_FUYAO_MAX_PAGES} 页"
+            f"（{_FUYAO_MAX_PAGES * page_size} 行），结果可能不完整"
+        )
+
+    import pandas as pd  # noqa: PLC0415
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def _run_baostock(item: CatalogItem, params: dict[str, Any]) -> Any:
@@ -405,7 +551,10 @@ def try_run(
 
     # 4) 路由执行
     t0 = time.perf_counter()
-    runner = _run_baostock if item.datasource == "baostock" else _run_akshare
+    runner = {
+        "baostock": _run_baostock,
+        "fuyao": _run_fuyao,
+    }.get(item.datasource, _run_akshare)
     try:
         raw = runner(item, clean)
     except AppError:

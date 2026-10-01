@@ -47,6 +47,21 @@ def _static_check(item: catalog_service.CatalogItem) -> tuple[str, str]:
             return "missing", "baostock_client 缺少该方法（代码与目录不同步）"
         return "ok", ""
 
+    if item.datasource == "fuyao":
+        # ★ fuyao（同花顺官方 REST，2026-10-01 新增）：走自己的白名单 + 方法存在性。
+        #   不能落到下面"在 akshare 里找函数"的分支 —— 那会把 11 个 fuyao 条目
+        #   全部误判为 missing（"akshare 中已不存在函数"），页面一片红。
+        from app.services.data_source.fuyao_client import (  # noqa: PLC0415
+            fuyao_client,
+        )
+
+        if item.func_name not in catalog_service._FUYAO_METHODS:
+            return "broken", f"fuyao 方法 {item.func_name} 不在可试跑白名单中"
+        fn = getattr(fuyao_client, item.func_name, None)
+        if fn is None or not callable(fn):
+            return "missing", "fuyao_client 缺少该方法（代码与目录不同步）"
+        return _check_params_declared(item, fn)
+
     import akshare as ak  # noqa: PLC0415
 
     fn = getattr(ak, item.func_name, None)
@@ -55,6 +70,13 @@ def _static_check(item: catalog_service.CatalogItem) -> tuple[str, str]:
     if not callable(fn):
         return "broken", f"{item.func_name} 存在但不可调用"
 
+    return _check_params_declared(item, fn)
+
+
+def _check_params_declared(
+    item: catalog_service.CatalogItem, fn: Any
+) -> tuple[str, str]:
+    """校验 YAML 声明的参数名确实在函数签名里（签名变更的早期预警）。"""
     try:
         sig = inspect.signature(fn)
     except (TypeError, ValueError):  # pragma: no cover —— 极少数无签名

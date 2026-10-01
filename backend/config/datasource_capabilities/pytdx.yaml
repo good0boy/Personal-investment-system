@@ -116,6 +116,11 @@ capabilities:
     quality: "none"
     note: "❌ 无资金流数据"
     priority: "-"
+  limit_pool:
+    supported: false
+    quality: "none"
+    note: "（未实测；本轮未接入涨跌停池）"
+    priority: "-"
   dragon_tiger:
     supported: false
     quality: "none"

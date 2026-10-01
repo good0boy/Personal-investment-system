@@ -12,10 +12,12 @@ import time
 import pytest
 
 from app.core.errors import DataSourceRateLimited
+from app.services.data_source.line_groups import LINE_GROUPS, line_group_of
 from app.services.data_source.throttle import (
     TIER_DEFINITE,
     TIER_SOFT,
     CircuitBreaker,
+    GroupedCircuitBreaker,
     SlidingWindowRateLimiter,
     classify_limit_signal,
     looks_rate_limited,
@@ -303,3 +305,98 @@ def test_breaker_wait_until_closed(monkeypatch):
 def test_looks_rate_limited_covers_both_tiers():
     assert looks_rate_limited("429") is True
     assert looks_rate_limited("Connection aborted") is True
+
+
+# ======================================================================
+# 分组熔断（GroupedCircuitBreaker）—— 2026-10-01 根因修复
+# ======================================================================
+def _grouped(**kw) -> GroupedCircuitBreaker:
+    return GroupedCircuitBreaker(
+        kw.pop("cooldown", 10.0), soft_cooldown=kw.pop("soft_cooldown", 0.2), **kw
+    )
+
+
+def test_grouped_breaker_isolates_trips():
+    """★ 核心：一条线路熔断，不得连坐其他线路。
+
+    实测故障：东财 push2 域名被网络掐断 → soft 连踩 3 次 → 原来的单例熔断器
+    把**整个 akshare 通道**封了 300 秒，连本机正常的 push2ex（涨停池）与
+    同花顺接口也一起报"数据源触发限频"。
+    """
+    g = _grouped(soft_threshold=3, name="akshare")
+
+    for _ in range(3):
+        tripped = g.record_failure("RemoteDisconnected 模拟", tier=TIER_SOFT, key="em_push2")
+    assert tripped is True
+    assert g.is_open("em_push2") is True
+
+    # 其他线路不受影响
+    assert g.is_open("ths") is False
+    assert g.is_open("em_push2ex") is False
+    # 连 one-shot 的 ensure_closed 也放行
+    g.ensure_closed("ths")
+    g.ensure_closed("em_push2ex")
+    # 但故障线路必须拦住
+    with pytest.raises(DataSourceRateLimited):
+        g.ensure_closed("em_push2")
+
+
+def test_grouped_breaker_aggregate_semantics():
+    """缺省 key 的聚合语义：`open`=任一组，`reset()`=全部重置。"""
+    g = _grouped(soft_threshold=1, name="akshare")
+    g.record_failure("炸了", tier=TIER_SOFT, key="em_push2")
+    g.record_failure("也炸了", tier=TIER_SOFT, key="em_push2his")
+
+    st = g.stats()
+    assert st["open"] is True                      # 任一组开 → 源整体不可用
+    assert set(st["open_groups"]) == {"em_push2", "em_push2his"}
+    assert {g_["key"] for g_ in st["groups"]} == {"em_push2", "em_push2his"}
+    # 顶层字段仍在（兼容老前端/老断言）
+    assert st["remaining_seconds"] > 0
+    assert st["soft_threshold"] == 1
+
+    g.reset()                                      # 一键解除
+    assert g.stats()["open_groups"] == []
+    assert g.is_open() is False
+
+
+def test_grouped_breaker_default_key_is_backward_compatible():
+    """缺省 key 的行为必须与旧的单组 CircuitBreaker 完全一致。"""
+    g = _grouped(cooldown=0.2)
+    g.trip("测试", cooldown=0.2)                   # 位置参数 + 关键字都不变
+    assert g.is_open() is True
+    assert g.remaining() > 0
+    assert g.stats()["reason"] == "测试"
+    time.sleep(0.25)
+    assert g.is_open() is False
+
+
+def test_grouped_breaker_stats_of_unknown_group_is_clean():
+    """查询没熔断过的组不应"顺手创建"出脏状态。"""
+    g = _grouped(name="akshare")
+    st = g.stats("never_used")
+    assert st["open"] is False
+    assert st["remaining_seconds"] == 0
+
+
+def test_line_group_of_known_and_fallback():
+    """分组映射：显式声明 → `_ths` 后缀兜底 → 自成一组。"""
+    assert line_group_of("stock_zh_a_spot_em") == "em_push2"
+    assert line_group_of("stock_board_concept_name_em") == "em_push2"
+    assert line_group_of("stock_zh_a_hist") == "em_push2his"
+    assert line_group_of("stock_zt_pool_em") == "em_push2ex"
+    assert line_group_of("stock_board_industry_name_ths") == "ths"
+    assert line_group_of("stock_fund_flow_industry") == "ths"
+    assert line_group_of("tool_trade_date_hist_sina") == "sina"
+    # 未声明的接口自成一组（有保护，但不与别人共命运）
+    assert line_group_of("some_brand_new_func") == "some_brand_new_func"
+    assert line_group_of("") == "default"
+
+
+def test_line_groups_are_disjoint():
+    """同一函数不能出现在两个线路组里（会让熔断行为不确定）。"""
+    seen: dict[str, str] = {}
+    for group, funcs in LINE_GROUPS.items():
+        for fn in funcs:
+            assert fn not in seen, f"{fn} 同时属于 {seen[fn]} 与 {group}"
+            seen[fn] = group

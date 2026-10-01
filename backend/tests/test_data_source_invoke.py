@@ -46,6 +46,17 @@ class FakeSource(BaseDataSource):
     def fetch_trade_dates(self, start_date, end_date):
         return []
 
+    def _line_group(self, func_name: str) -> str:
+        """熔断分组：假数据源**不分线路**，全部归到 `default` 一组。
+
+        ⚠️ 这是刻意的：本文件验证的是"流水线本身"（缓存/熔断/限流/日志），
+           而不是线路隔离。测试里用的 `abort_fn` / `fn` / `ok_fn` 都是随手起的
+           名字，若按真实映射走就会各自成组，`trip("测试")` 与
+           `soft_strikes` 这类断言会失去意义。
+           线路隔离由 `test_line_group_*.py` 专门覆盖。
+        """
+        return "default"
+
 
 class CallRecorder:
     """记录 `log_datasource_call` 的调用（避免测试写入真实 meta.db）。"""
@@ -454,7 +465,8 @@ def test_deep_health_included_in_health_all_shape():
     from app.services.data_source import health_all
 
     items = health_all(deep=False)
-    assert len(items) == 2
+    # 2026-10-01 起是 3 个：baostock（主源）/ akshare（广度）/ fuyao（同花顺 REST）
+    assert len(items) == 3
     for it in items:
         assert "deep" in it
         assert it["deep"] is False
@@ -463,3 +475,65 @@ def test_deep_health_included_in_health_all_shape():
 def test_params_not_leaked_into_log_when_absent(src, recorder):
     src._invoke("fn", lambda: None)
     assert recorder.find("ok")["params"] == ""
+
+
+# ======================================================================
+# 跨线路熔断不连坐（2026-10-01 根因修复的端到端回归）
+# ======================================================================
+class MappedSource(FakeSource):
+    """分组走**真实映射**的数据源，用来复刻主人的真实故障。"""
+
+    def _line_group(self, func_name: str) -> str:
+        from app.services.data_source.line_groups import line_group_of
+
+        return line_group_of(func_name)
+
+
+@pytest.fixture
+def mapped_src() -> MappedSource:
+    return MappedSource()
+
+
+def test_push2_failure_does_not_take_down_ths_or_push2ex(mapped_src):
+    """★ 复刻真实故障：东财 push2 连踩 3 次 soft → 只有 em_push2 熔断。
+
+    故障原貌：本机对 push2.eastmoney.com 掐断连接（RemoteDisconnected），
+    被归为 soft 疑似限频，连踩 3 次触发熔断；而熔断器当时是**整个 akshare
+    通道共用一把锁** → 同花顺板块、push2ex 涨停池也一起报"数据源触发限频"。
+    现象是"所有东财接口都挂了"，真相是一个域名把整个源带下了线。
+    """
+    def push2_dead():
+        raise DataSourceRateLimited(
+            "连接被掐断", detail={"tier": "soft", "raw": "RemoteDisconnected"}
+        )
+
+    for _ in range(mapped_src._breaker.soft_threshold):
+        with pytest.raises(DataSourceRateLimited):
+            mapped_src._invoke("stock_zh_a_spot_em", push2_dead, cache_key=None)
+
+    assert mapped_src._breaker.is_open("em_push2") is True
+
+    # ★ 关键断言：其他线路照常工作
+    assert mapped_src._invoke("stock_board_industry_name_ths", lambda: "ths-ok") == "ths-ok"
+    assert mapped_src._invoke("stock_zt_pool_em", lambda: "zt-ok") == "zt-ok"
+    assert mapped_src._invoke("tool_trade_date_hist_sina", lambda: "sina-ok") == "sina-ok"
+
+    assert mapped_src._breaker.is_open("ths") is False
+    assert mapped_src._breaker.is_open("em_push2ex") is False
+    assert mapped_src._breaker.is_open("sina") is False
+    # 但源整体状态如实报告"有线路挂了"
+    assert mapped_src._breaker.is_open() is True
+    assert mapped_src._breaker.stats()["open_groups"] == ["em_push2"]
+
+
+def test_health_reports_open_groups(mapped_src):
+    """健康状态要能看出**是哪条线路**挂了，而不是只有一个笼统的"熔断中"。"""
+    mapped_src._breaker.record_failure("炸", tier="soft", key="em_push2his")
+    mapped_src._breaker.record_failure("炸", tier="soft", key="em_push2his")
+    mapped_src._breaker.record_failure("炸", tier="soft", key="em_push2his")
+
+    stats = mapped_src.throttle_stats()["circuit_breaker"]
+    assert stats["open"] is True
+    assert stats["open_groups"] == ["em_push2his"]
+    # 只出现被用过的那一组 —— 没熔断过的组不该被"顺手创建"出脏状态
+    assert {g["key"] for g in stats["groups"]} == {"em_push2his"}

@@ -121,7 +121,12 @@
         />
 
         <el-table :data="throttleRows" size="small" border>
-          <el-table-column prop="name" label="数据源" width="100" />
+          <el-table-column label="数据源 · 线路" width="170">
+            <template #default="{ row }">
+              <span class="mono">{{ row.name }}</span>
+              <span v-if="row.group" class="sub"> · {{ row.group }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="熔断" width="110">
             <template #default="{ row }">
               <el-tag
@@ -535,30 +540,58 @@ interface ThrottleRow {
   tripCount: number
   reason: string
   lastTripAt: string | null
+  /** 熔断线路组（如 em_push2 / ths）。单组源为 undefined，不显示 */
+  group?: string
 }
 
-const throttleRows = computed<ThrottleRow[]>(() =>
-  (health.value?.datasources ?? []).map((d) => {
+const throttleRows = computed<ThrottleRow[]>(() => {
+  const rows: ThrottleRow[] = []
+  for (const d of health.value?.datasources ?? []) {
     const t = d.throttle
     const rl = t?.rate_limiter
     const cb = t?.circuit_breaker
-    return {
+    const base = {
       name: d.name,
-      open: cb?.open ?? false,
-      remaining: cb?.remaining_seconds ?? 0,
-      softStrikes: cb?.soft_strikes ?? 0,
-      softThreshold: cb?.soft_threshold ?? 0,
       callsInWindow: rl?.calls_in_window ?? 0,
       maxPerMinute: rl?.max_calls_per_minute ?? null,
       minInterval: rl?.min_interval ?? null,
       totalCalls: rl?.total_calls ?? 0,
       totalWait: rl?.total_wait_seconds ?? null,
-      tripCount: cb?.trip_count ?? 0,
-      reason: cb?.reason ?? '',
-      lastTripAt: cb?.last_trip_at ?? null,
     }
-  }),
-)
+    const groups = cb?.groups ?? []
+    // 只有一个线路组时不显示组名（多数源就是这样，显示了只是噪音）
+    if (groups.length <= 1) {
+      const g = groups[0]
+      rows.push({
+        ...base,
+        open: g ? g.open : cb?.open ?? false,
+        remaining: g ? g.remaining_seconds : cb?.remaining_seconds ?? 0,
+        softStrikes: g ? g.soft_strikes : cb?.soft_strikes ?? 0,
+        softThreshold: g ? g.soft_threshold : cb?.soft_threshold ?? 0,
+        tripCount: g ? g.trip_count : cb?.trip_count ?? 0,
+        reason: g ? g.reason : cb?.reason ?? '',
+        lastTripAt: g ? g.last_trip_at : cb?.last_trip_at ?? null,
+      })
+      continue
+    }
+    // ★ 多线路组：一组一行。这样"东财 push2 熔断、同花顺正常"一眼可见，
+    //   而不是被聚合成一个"akshare 熔断了"的假象（这正是本页要修的表达问题）
+    for (const g of groups) {
+      rows.push({
+        ...base,
+        group: g.key,
+        open: g.open,
+        remaining: g.remaining_seconds,
+        softStrikes: g.soft_strikes,
+        softThreshold: g.soft_threshold,
+        tripCount: g.trip_count,
+        reason: g.reason,
+        lastTripAt: g.last_trip_at,
+      })
+    }
+  }
+  return rows
+})
 
 const anyBreakerOpen = computed(() => throttleRows.value.some((r) => r.open))
 
@@ -633,7 +666,7 @@ async function doDeepProbe() {
       )
       if (d.message) lines.push(`      ${d.message}`)
     }
-    for (const name of ['baostock', 'akshare']) {
+    for (const name of ['baostock', 'akshare', 'fuyao']) {
       try {
         const r = await probeDatasource(name)
         lines.push(`  [probe] ${name}: ${JSON.stringify(r)}`)

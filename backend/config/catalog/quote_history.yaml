@@ -4,64 +4,12 @@
 # ★ 回测与模拟盘的数据一律走 baostock（本页收录其 4 个核心方法）；
 #   akshare 的历史接口用于研究参考。两者成交量单位不同：
 #   akshare 单位是「手」，baostock 单位是「股」（akshare_client 已统一换算）。
-
-- id: quote_history.stock_zh_a_hist
-  name: A股历史行情（日/周/月线）
-  sub_category: 个股日线
-  datasource: akshare
-  func_name: stock_zh_a_hist
-  description: 东方财富-个股历史行情，支持日/周/月频与前后复权。研究参考用；回测主数据走 baostock（含 ST/停牌字段）
-  symbol_format: plain
-  params:
-    - { name: symbol, type: str, default: "600519", desc: "股票代码（6 位数字）" }
-    - { name: period, type: str, default: "daily", desc: "周期", options: ["daily", "weekly", "monthly"] }
-    - { name: start_date, type: str, default: "20240101", desc: "开始日期（YYYYMMDD）" }
-    - { name: end_date, type: str, default: "20240131", desc: "结束日期（YYYYMMDD）" }
-    - { name: adjust, type: str, required: false, default: "hfq", desc: "复权（qfq 前复权 / hfq 后复权 / 空=不复权）", options: ["", "qfq", "hfq"] }
-  returns:
-    - { name: 日期, type: str, desc: "交易日" }
-    - { name: 股票代码, type: str, desc: "6 位代码" }
-    - { name: 开盘, type: float, desc: "开盘价" }
-    - { name: 收盘, type: float, desc: "收盘价" }
-    - { name: 最高, type: float, desc: "最高价" }
-    - { name: 最低, type: float, desc: "最低价" }
-    - { name: 成交量, type: float, desc: "成交量（手）" }
-    - { name: 成交额, type: float, desc: "成交额（元）" }
-    - { name: 振幅, type: float, desc: "振幅 %" }
-    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
-    - { name: 涨跌额, type: float, desc: "涨跌额" }
-    - { name: 换手率, type: float, desc: "换手率 %" }
-  sample_params: { symbol: "600519", period: "daily", start_date: "20240101", end_date: "20240131", adjust: "hfq" }
-  tags: [日线, 复权, 东财, 核心接口]
-  returns_verified: true
-  returns_note: "2026-09-16 曾实测 12 列；今日探测受本机代理影响未复测。回测请用 baostock（isST/tradestatus 是复权口径与合规字段的唯一可信来源）"
-
-- id: quote_history.stock_zh_a_hist_min_em
-  name: A股分钟线
-  sub_category: 个股分钟
-  datasource: akshare
-  func_name: stock_zh_a_hist_min_em
-  description: 东方财富-分钟级行情。⚠️ 日期格式是 'YYYY-MM-DD HH:MM:SS'，与日线接口的 YYYYMMDD 不同（实测的坑）
-  symbol_format: plain
-  params:
-    - { name: symbol, type: str, default: "600519", desc: "股票代码" }
-    - { name: start_date, type: str, default: "2024-01-02 09:30:00", desc: "开始时间（YYYY-MM-DD HH:MM:SS）" }
-    - { name: end_date, type: str, default: "2024-01-02 15:00:00", desc: "结束时间（同上）" }
-    - { name: period, type: str, default: "5", desc: "分钟数", options: ["1", "5", "15", "30", "60"] }
-    - { name: adjust, type: str, required: false, default: "", desc: "复权", options: ["", "qfq", "hfq"] }
-  returns:
-    - { name: 时间, type: str, desc: "K线时间" }
-    - { name: 开盘, type: float, desc: "开盘价" }
-    - { name: 收盘, type: float, desc: "收盘价" }
-    - { name: 最高, type: float, desc: "最高价" }
-    - { name: 最低, type: float, desc: "最低价" }
-    - { name: 成交量, type: float, desc: "成交量（手）" }
-    - { name: 成交额, type: float, desc: "成交额（元）" }
-    - { name: 均价, type: float, desc: "均价" }
-  sample_params: { symbol: "600519", start_date: "2024-01-02 09:30:00", end_date: "2024-01-02 15:00:00", period: "5", adjust: "" }
-  tags: [分钟线, 东财]
-  returns_verified: false
-  returns_note: "本机代理受限未能实测；依据 akshare 文档"
+#
+# ★ 2026-10-01 数据源变更：东财 push2/push2his 域名的接口在本机被网络掐断，
+#   已下架 18 条（详见本文件末尾「东财接口下架说明」）；
+#   板块与涨跌停改由 **同花顺** 承担 —— akshare 内置的 `*_ths`（免费）负责
+#   板块列表/历史，**fuyao REST**（同花顺官方，需 API Key）负责板块成分股、
+#   按历史交易日取涨跌停池、连板天梯。
 
 - id: quote_history.stock_zh_a_daily
   name: A股日线（新浪，含复权因子）
@@ -88,143 +36,6 @@
   tags: [日线, 新浪, 复权因子]
   returns_verified: true
   returns_note: "实测 22 行 × 9 列"
-
-- id: quote_history.index_zh_a_hist
-  name: 指数历史行情（日/周/月）
-  sub_category: 指数
-  datasource: akshare
-  func_name: index_zh_a_hist
-  description: 东方财富-指数历史行情。上证指数 000001、沪深300 000300、中证500 000905 等
-  params:
-    - { name: symbol, type: str, default: "000001", desc: "指数代码（6 位数字）" }
-    - { name: period, type: str, default: "daily", desc: "周期", options: ["daily", "weekly", "monthly"] }
-    - { name: start_date, type: str, default: "20240101", desc: "开始日期（YYYYMMDD）" }
-    - { name: end_date, type: str, default: "20240131", desc: "结束日期（YYYYMMDD）" }
-  returns:
-    - { name: 日期, type: str, desc: "交易日" }
-    - { name: 开盘, type: float, desc: "开盘" }
-    - { name: 收盘, type: float, desc: "收盘" }
-    - { name: 最高, type: float, desc: "最高" }
-    - { name: 最低, type: float, desc: "最低" }
-    - { name: 成交量, type: float, desc: "成交量" }
-    - { name: 成交额, type: float, desc: "成交额" }
-  sample_params: { symbol: "000001", period: "daily", start_date: "20240101", end_date: "20240131" }
-  tags: [指数, 东财]
-  returns_verified: false
-  returns_note: "本机代理受限未能实测；依据 akshare 文档。择时用的上证指数日线在系统内部走 baostock（fetch_index_daily）"
-
-- id: quote_history.index_zh_a_hist_min_em
-  name: 指数分钟线
-  sub_category: 指数
-  datasource: akshare
-  func_name: index_zh_a_hist_min_em
-  description: 东方财富-指数分钟级行情
-  params:
-    - { name: symbol, type: str, default: "000001", desc: "指数代码" }
-    - { name: period, type: str, default: "5", desc: "分钟数", options: ["1", "5", "15", "30", "60"] }
-    - { name: start_date, type: str, default: "2024-01-02 09:30:00", desc: "开始时间（YYYY-MM-DD HH:MM:SS）" }
-    - { name: end_date, type: str, default: "2024-01-02 15:00:00", desc: "结束时间" }
-  returns:
-    - { name: 时间, type: str, desc: "K线时间" }
-    - { name: 开盘, type: float, desc: "开盘" }
-    - { name: 收盘, type: float, desc: "收盘" }
-    - { name: 最高, type: float, desc: "最高" }
-    - { name: 最低, type: float, desc: "最低" }
-    - { name: 成交量, type: float, desc: "成交量" }
-    - { name: 成交额, type: float, desc: "成交额" }
-  sample_params: { symbol: "000001", period: "5", start_date: "2024-01-02 09:30:00", end_date: "2024-01-02 15:00:00" }
-  tags: [指数, 分钟线, 东财]
-  returns_verified: false
-  returns_note: "本机代理受限未能实测；依据 akshare 文档"
-
-- id: quote_history.stock_board_industry_hist_em
-  name: 行业板块历史行情
-  sub_category: 板块
-  datasource: akshare
-  func_name: stock_board_industry_hist_em
-  description: 东方财富-行业板块历史 K 线。⚠️ period 的取值是「日k/周k/月k」，与个股接口的 daily/weekly 不同
-  params:
-    - { name: symbol, type: str, default: "小金属", desc: "板块名称（从板块列表接口取）" }
-    - { name: start_date, type: str, default: "20240101", desc: "开始日期（YYYYMMDD）" }
-    - { name: end_date, type: str, default: "20240131", desc: "结束日期（YYYYMMDD）" }
-    - { name: period, type: str, default: "日k", desc: "周期", options: ["日k", "周k", "月k"] }
-    - { name: adjust, type: str, required: false, default: "", desc: "复权", options: ["", "qfq", "hfq"] }
-  returns:
-    - { name: 日期, type: str, desc: "交易日" }
-    - { name: 开盘, type: float, desc: "开盘" }
-    - { name: 收盘, type: float, desc: "收盘" }
-    - { name: 最高, type: float, desc: "最高" }
-    - { name: 最低, type: float, desc: "最低" }
-    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
-    - { name: 成交额, type: float, desc: "成交额" }
-    - { name: 换手率, type: float, desc: "换手率 %" }
-  sample_params: { symbol: "小金属", start_date: "20240101", end_date: "20240131", period: "日k", adjust: "" }
-  tags: [板块, 东财]
-  returns_verified: false
-  returns_note: "本机代理受限未能实测；依据 akshare 文档"
-
-- id: quote_history.stock_board_industry_cons_em
-  name: 行业板块成分股
-  sub_category: 板块
-  datasource: akshare
-  func_name: stock_board_industry_cons_em
-  description: 东方财富-行业板块的成分股列表
-  params:
-    - { name: symbol, type: str, default: "小金属", desc: "板块名称或板块代码" }
-  returns:
-    - { name: 序号, type: int, desc: "序号" }
-    - { name: 代码, type: str, desc: "6 位代码" }
-    - { name: 名称, type: str, desc: "简称" }
-    - { name: 最新价, type: float, desc: "最新价" }
-    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
-    - { name: 市盈率-动态, type: float, desc: "动态 PE" }
-  sample_params: { symbol: "小金属" }
-  tags: [板块, 东财]
-  returns_verified: false
-  returns_note: "本机代理受限未能实测；依据 akshare 文档"
-
-- id: quote_history.stock_board_concept_hist_em
-  name: 概念板块历史行情
-  sub_category: 板块
-  datasource: akshare
-  func_name: stock_board_concept_hist_em
-  description: 东方财富-概念板块历史 K 线
-  params:
-    - { name: symbol, type: str, default: "人工智能", desc: "概念板块名称" }
-    - { name: start_date, type: str, default: "20240101", desc: "开始日期（YYYYMMDD）" }
-    - { name: end_date, type: str, default: "20240131", desc: "结束日期（YYYYMMDD）" }
-    - { name: period, type: str, default: "daily", desc: "周期", options: ["daily", "weekly", "monthly"] }
-    - { name: adjust, type: str, required: false, default: "", desc: "复权", options: ["", "qfq", "hfq"] }
-  returns:
-    - { name: 日期, type: str, desc: "交易日" }
-    - { name: 开盘, type: float, desc: "开盘" }
-    - { name: 收盘, type: float, desc: "收盘" }
-    - { name: 最高, type: float, desc: "最高" }
-    - { name: 最低, type: float, desc: "最低" }
-    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
-  sample_params: { symbol: "人工智能", start_date: "20240101", end_date: "20240131", period: "daily", adjust: "" }
-  tags: [板块, 概念, 东财]
-  returns_verified: false
-  returns_note: "本机代理受限未能实测；依据 akshare 文档"
-
-- id: quote_history.stock_board_concept_cons_em
-  name: 概念板块成分股
-  sub_category: 板块
-  datasource: akshare
-  func_name: stock_board_concept_cons_em
-  description: 东方财富-概念板块成分股列表
-  params:
-    - { name: symbol, type: str, default: "人工智能", desc: "板块名称或板块代码" }
-  returns:
-    - { name: 序号, type: int, desc: "序号" }
-    - { name: 代码, type: str, desc: "6 位代码" }
-    - { name: 名称, type: str, desc: "简称" }
-    - { name: 最新价, type: float, desc: "最新价" }
-    - { name: 涨跌幅, type: float, desc: "涨跌幅 %" }
-  sample_params: { symbol: "人工智能" }
-  tags: [板块, 概念, 东财]
-  returns_verified: false
-  returns_note: "本机代理受限未能实测；依据 akshare 文档"
 
 - id: quote_history.stock_lhb_detail_em
   name: 龙虎榜详情
@@ -449,30 +260,349 @@
   returns_note: "实测 2024-01-02 中证500 成分 500 只 × 3 列"
 
 # ============================================================
-# 已知限制：东财「涨停/跌停/强势股池」系列接口
+# 东财「涨停/跌停/强势股池」系列：历史日期限制（部分已解决）
 # ============================================================
 # 涉及 quote_history.stock_zt_pool_previous_em / stock_zt_pool_strong_em
 #      + quote_realtime.stock_zt_pool_em（定义在 quote_realtime.yaml）
 #
-# 现象：样例日期返回 0 行 × 0 列，但**不报错**（接口连通、HTTP 200）。
+# 现象：传入**历史日期**返回 0 行 × 0 列，但**不报错**（接口连通、HTTP 200）。
+# 根因：akshare 这 6 个接口全部只走东财 push2ex.eastmoney.com，而该接口
+#       只保留**最近 1~2 个交易日**的数据。
 #
-# 根因（2026-09-18 实测）：
-#   akshare 里 6 个同类接口（stock_zt_pool_em / previous_em / strong_em /
-#   dtgc_em / zbgc_em / sub_new_em）**全部只走东财 push2ex.eastmoney.com
-#   这一个域名**，没有非东财的替代源。而该接口只保留**最近 1~2 个交易日**
-#   的数据：
-#       20240102 → (0, 0)      20260916 → (89, 16)
-#       20240415 → (0, 0)      20260917 → (47, 16)
-#       20241231 → (0, 0)      20260918 → (0, 0)  ← 当天数据当日不可得
-#   即：**历史日期一律空表**，只有最近一两个交易日能取到。
+# ★ 2026-10-01 更新：**历史涨跌停已由同花顺 fuyao REST 解决** ——
+#   见本文件 `quote_history.fuyao_limit_up_pool / _down_pool / _break_pool`，
+#   它们的 `date_ms` 可指定任意历史交易日（实测 20260929 正常返回）。
+#   所以「东财接口历史空表」现在只是**该接口自身的限制**，
+#   不再是项目的能力缺口 —— 要历史数据请用 fuyao 的对应条目。
 #
-# 处置（主人 2026-09-18 拍板）：
-#   暂不外接其他数据源，三个接口的 default / sample_params 统一为
-#   2024-01-02。**试跑会返回空表，这是预期行为，不是接口坏了**——
-#   前端已对 0 行结果显示「返回空表」提示。
+# 东财这三个接口**保留**：它们走 push2ex 域名，本机实测**可用**（0.2~0.3s），
+# 与 fuyao 形成两条独立通道（互为校验）。只有 push2 / push2his 域名的东财
+# 接口在本机不通，已从目录中移除（见下方「东财接口下架说明」）。
 #
-# 待办：若要真正用于策略，只能
-#   (a) 改为「每日盘后抓取当日」并在本地落盘历史（推荐，与模块 4 日度跑批天然契合）；
-#   (b) 或引入 tushare `limit_list`（需积分）/ 自建涨停判定（用 baostock 的
-#       preclose + pctChg + 板块涨跌幅限制推导，注意 ST 5%、创业板 20%）。
-#   详见 docs/开发进度.md「问题集」Q1。
+# 另一个老问题的处置（2026-09-18 拍板）：
+#   三个接口的 default / sample_params 保留 2024-01-02。**试跑会返回空表，
+#   这是预期行为，不是接口坏了** —— 前端已对 0 行结果显示「返回空表」提示。
+
+# ============================================================
+# 同花顺板块（akshare 内置 `*_ths`）—— 2026-10-01 新增
+# ============================================================
+# ★ 为什么要加：东财「概念板块 / 行业板块」全部走 push2.eastmoney.com，
+#   该域名在本机被网络**掐断**（实测 ConnectionError / RemoteDisconnected），
+#   整块不可用；同花顺（10jqka）域名实测全通。
+#   akshare 1.18.94 自带 43 个 `*_ths` 函数，板块相关 10 个。
+#
+# ⚠️ `symbol` 入参是**板块中文名**（如 半导体 / 白酒概念），不是代码 ——
+#   这些条目刻意**不声明 `symbol_format`**：声明了会被"股票代码"正则误拦
+#   （`_validate_symbol` 只在声明了格式时才校验）。
+# ⚠️ akshare **没有** `*_ths` 成分股接口（cons 系列全是 `_em`/`_futu`）——
+#   板块成分股由 fuyao（同花顺官方 REST）承担，见本文件末尾 fuyao_* 条目。
+- id: quote_history.ths_industry_name
+  name: 同花顺行业板块列表 ★
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_industry_name_ths
+  description: >-
+    同花顺-行业板块名称与代码。**本机实测可用**（0.2s），
+    替代已失效的东财 stock_board_industry_name_em。
+    返回的 name（中文名）是下面几个板块接口的必填入参
+  params: []
+  returns:
+    - { name: name, type: str, desc: "板块中文名（后续接口的入参）" }
+    - { name: code, type: str, desc: "同花顺板块代码（如 881121）" }
+  sample_params: {}
+  tags: [板块, 同花顺, ths, 核心接口]
+  returns_verified: true
+  returns_note: "实测 90 行 × 2 列（本机，2026-10-01）"
+
+- id: quote_history.ths_industry_index
+  name: 同花顺行业板块历史行情 ★
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_industry_index_ths
+  description: >-
+    同花顺-行业板块历史指数。⚠️ symbol 传**中文板块名**（不是代码），
+    取值来自上面的板块列表接口。内部用 py_mini_racer 执行 ths.js 生成 cookie
+  params:
+    - { name: symbol, type: str, default: "半导体", desc: "板块中文名" }
+    - { name: start_date, type: str, default: "20260101", desc: "开始日期 YYYYMMDD" }
+    - { name: end_date, type: str, default: "20261231", desc: "结束日期 YYYYMMDD" }
+  returns:
+    - { name: 日期, type: str, desc: "交易日" }
+    - { name: 开盘价, type: float, desc: "开盘" }
+    - { name: 最高价, type: float, desc: "最高" }
+    - { name: 最低价, type: float, desc: "最低" }
+    - { name: 收盘价, type: float, desc: "收盘" }
+    - { name: 成交量, type: float, desc: "成交量" }
+    - { name: 成交额, type: float, desc: "成交额" }
+  sample_params: { symbol: "半导体", start_date: "20260101", end_date: "20261231" }
+  tags: [板块, 同花顺, ths, 核心接口]
+  returns_verified: true
+  returns_note: "实测「半导体」拉 2026 全年正常（本机，2026-10-01）"
+
+- id: quote_history.ths_concept_name
+  name: 同花顺概念板块列表 ★
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_concept_name_ths
+  description: >-
+    同花顺-概念板块名称与代码（约 4s，内部逐页抓取）。
+    替代已失效的东财 stock_board_concept_name_em
+  params: []
+  returns:
+    - { name: name, type: str, desc: "概念中文名" }
+    - { name: code, type: str, desc: "同花顺概念代码（如 308614）" }
+  sample_params: {}
+  tags: [板块, 概念, 同花顺, ths]
+  returns_verified: true
+  returns_note: "实测 375 行 × 2 列，耗时约 4s（本机，2026-10-01）"
+
+- id: quote_history.ths_concept_index
+  name: 同花顺概念板块历史行情
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_concept_index_ths
+  description: 同花顺-概念板块历史指数（symbol 为中文概念名，口径同行业指数）
+  params:
+    - { name: symbol, type: str, default: "阿里巴巴概念", desc: "概念中文名" }
+    - { name: start_date, type: str, default: "20260101", desc: "开始日期 YYYYMMDD" }
+    - { name: end_date, type: str, default: "20261231", desc: "结束日期 YYYYMMDD" }
+  returns:
+    - { name: 日期, type: str, desc: "交易日" }
+    - { name: 开盘价, type: float, desc: "开盘" }
+    - { name: 最高价, type: float, desc: "最高" }
+    - { name: 最低价, type: float, desc: "最低" }
+    - { name: 收盘价, type: float, desc: "收盘" }
+    - { name: 成交量, type: float, desc: "成交量" }
+    - { name: 成交额, type: float, desc: "成交额" }
+  sample_params: { symbol: "阿里巴巴概念", start_date: "20260101", end_date: "20261231" }
+  tags: [板块, 概念, 同花顺, ths]
+  returns_verified: false
+  returns_note: "结构同行业指数接口（同一套 10jqka 源）"
+
+- id: quote_history.ths_industry_info
+  name: 同花顺行业板块简介
+  sub_category: 板块
+  datasource: akshare
+  func_name: stock_board_industry_info_ths
+  description: 同花顺-板块简介（成分股家数、领涨股等，项目/值两列）
+  params:
+    - { name: symbol, type: str, default: "半导体", desc: "板块中文名" }
+  returns:
+    - { name: 项目, type: str, desc: "简介项目名" }
+    - { name: 值, type: str, desc: "对应取值" }
+  sample_params: { symbol: "半导体" }
+  tags: [板块, 同花顺, ths]
+  returns_verified: false
+
+# ============================================================
+# 同花顺 fuyao REST —— 涨跌停池 / 连板天梯（2026-10-01 新增）
+# ============================================================
+# ★ 核心价值：**可以指定历史交易日**（`date_ms`），而东财 push2ex 的涨停池
+#   只保留最近 1~2 个交易日（见本文件历史「已知限制」块，问题集 Q1）。
+#   这一条直接解决了"东财涨停池无历史数据"的老问题。
+# ⚠️ date_ms 接受 YYYYMMDD / YYYY-MM-DD / 毫秒时间戳；**省略 = 当日**。
+#    非交易日（含周末、节假日）返回空表，属正常，不是接口坏了。
+# ⚠️ 服务端对业务错误也返回 HTTP 200，靠信封 code 判断 —— 客户端已处理。
+- id: quote_history.fuyao_limit_up_pool
+  name: 涨停股票池（同花顺，含历史）★
+  sub_category: 涨跌停
+  datasource: fuyao
+  func_name: limit_up_pool
+  description: >-
+    同花顺官方 REST-涨停/连板股票池。含封单额、峰值封单额、封板时间、
+    涨停原因、连板数。★ 与东财 stock_zt_pool_em 的关键差别是
+    **date_ms 可指定任意历史交易日**，实测 20260929 正常返回。
+    size 传 200（服务端上限）时试跑会自动翻页取全，最多 5 页
+  params:
+    - { name: date_ms, type: date_ms, default: "", desc: "交易日 YYYYMMDD（省略=当日）" }
+    - { name: size, type: int, default: 200, desc: "每页条数（服务端上限 200；填 200 时试跑自动翻页取全）" }
+    - { name: sort_field, type: str, default: "seal_money", desc: "排序字段", options: ["last_price", "continue_day_cnt", "seal_money", "limit_up_time"] }
+    - { name: sort_dir, type: str, default: "desc", desc: "排序方向", options: ["desc", "asc"] }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: is_st, type: bool, desc: "是否 ST" }
+    - { name: is_new, type: bool, desc: "是否未开板新股" }
+    - { name: last_price, type: float, desc: "最新价" }
+    - { name: price_change_ratio_pct, type: float, desc: "涨跌幅 %" }
+    - { name: limit_up_time, type: str, desc: "封板时间 HH:MM" }
+    - { name: limit_up_reason, type: str, desc: "涨停原因（如 固态电池+人形机器人）" }
+    - { name: continue_day_text, type: str, desc: "连板文本（首板 / 5天4板）" }
+    - { name: continue_day_cnt, type: int, desc: "连板数" }
+    - { name: seal_money, type: float, desc: "当前封单额（元）" }
+    - { name: max_seal_money, type: float, desc: "峰值封单额（元）" }
+  sample_params: { size: 200, sort_field: "seal_money", sort_dir: "desc" }
+  tags: [涨跌停, 同花顺, fuyao, 情绪, 核心接口]
+  returns_verified: true
+  returns_note: "实测 20260929 返回 3 行 × 13 列（本机，2026-10-01）。非交易日返回空表属正常"
+
+- id: quote_history.fuyao_limit_down_pool
+  name: 跌停股票池（同花顺，含历史）
+  sub_category: 涨跌停
+  datasource: fuyao
+  func_name: limit_down_pool
+  description: 同花顺-跌停股票池，含首次/最后跌停时间与换手率。date_ms 可指定历史交易日
+  params:
+    - { name: date_ms, type: date_ms, default: "", desc: "交易日 YYYYMMDD（省略=当日）" }
+    - { name: size, type: int, default: 200, desc: "每页条数（服务端上限 200；填 200 时试跑自动翻页取全）" }
+    - { name: sort_field, type: str, default: "last_limit_time", desc: "排序字段", options: ["last_limit_time", "first_limit_time", "last_price", "price_change_ratio_pct", "turnover_ratio_pct"] }
+    - { name: sort_dir, type: str, default: "desc", desc: "排序方向", options: ["desc", "asc"] }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: last_price, type: float, desc: "最新价" }
+    - { name: price_change_ratio_pct, type: float, desc: "涨跌幅 %（原值，如 -10.0）" }
+    - { name: first_limit_time, type: str, desc: "首次跌停时间 HH:MM" }
+    - { name: last_limit_time, type: str, desc: "最后跌停时间 HH:MM" }
+    - { name: turnover_ratio_pct, type: float, desc: "换手率 %" }
+  sample_params: { size: 200 }
+  tags: [涨跌停, 同花顺, fuyao, 情绪]
+  returns_verified: true
+  returns_note: "实测 20260929 返回 3 行 × 8 列（本机，2026-10-01）"
+
+- id: quote_history.fuyao_limit_break_pool
+  name: 炸板股票池（同花顺，含历史）
+  sub_category: 涨跌停
+  datasource: fuyao
+  func_name: limit_break_pool
+  description: 同花顺-涨停炸板股票池，含开板次数与换手率。date_ms 可指定历史交易日
+  params:
+    - { name: date_ms, type: date_ms, default: "", desc: "交易日 YYYYMMDD（省略=当日）" }
+    - { name: size, type: int, default: 200, desc: "每页条数（服务端上限 200；填 200 时试跑自动翻页取全）" }
+    - { name: sort_field, type: str, default: "open_times", desc: "排序字段", options: ["price_change_ratio_pct", "open_times", "last_price", "turnover_ratio_pct", "turnover"] }
+    - { name: sort_dir, type: str, default: "desc", desc: "排序方向", options: ["desc", "asc"] }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: last_price, type: float, desc: "最新价" }
+    - { name: price_change_ratio_pct, type: float, desc: "涨跌幅 %" }
+    - { name: open_times, type: int, desc: "开板次数" }
+    - { name: turnover_ratio_pct, type: float, desc: "换手率 %" }
+    - { name: turnover, type: float, desc: "成交额（元）" }
+  sample_params: { size: 200 }
+  tags: [涨跌停, 同花顺, fuyao, 情绪]
+  returns_verified: true
+  returns_note: "实测 20260929 返回 3 行 × 8 列（本机，2026-10-01）"
+
+- id: quote_history.fuyao_limit_up_ladder
+  name: 连板天梯（同花顺，近 30 交易日）
+  sub_category: 涨跌停
+  datasource: fuyao
+  func_name: limit_up_ladder
+  description: >-
+    同花顺-连板梯队矩阵，固定返回近 30 个交易日（无入参）。
+    服务端原始结构是"日期 → 6 个板位 → 股票列表"的嵌套形态，
+    **客户端已展平成 行 = 日期 × 板位 × 标的**，便于表格查看与落盘
+  params: []
+  returns:
+    - { name: date, type: str, desc: "交易日" }
+    - { name: board, type: str, desc: "板位（two_board … seven_over）" }
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "简称" }
+    - { name: board_num, type: int, desc: "连板数" }
+    - { name: seal_nextday, type: bool, desc: "次日是否继续封板（最近一日为 null）" }
+    - { name: sign_level, type: int, desc: "上游标记等级" }
+  sample_params: {}
+  tags: [涨跌停, 连板, 同花顺, fuyao, 情绪]
+  returns_verified: true
+  returns_note: "实测展平后 364 行 × 8 列（本机，2026-10-01）"
+
+# ============================================================
+# 同花顺 fuyao REST —— 板块（含 akshare 缺失的**成分股**）
+# ============================================================
+- id: quote_history.fuyao_index_list
+  name: 同花顺板块清单（官方 REST）
+  sub_category: 板块
+  datasource: fuyao
+  func_name: index_list
+  description: >-
+    同花顺官方指数的板块目录（比 akshare 的 `*_ths` 列表更全：
+    行业 320 个 / 概念 390 个）。**以中文名为键**与 akshare 的接口对接
+  params:
+    - { name: tag, type: str, default: "industry", desc: "板块类别", options: ["industry", "cn_concept", "region", "tszs"] }
+  returns:
+    - { name: thscode, type: str, desc: "板块指数代码（如 881101.TI）" }
+    - { name: name, type: str, desc: "板块中文名" }
+  sample_params: { tag: "industry" }
+  tags: [板块, 同花顺, fuyao, 核心接口]
+  returns_verified: true
+  returns_note: "实测 industry 320 行 / cn_concept 390 行（本机，2026-10-01）"
+
+- id: quote_history.fuyao_index_constituents
+  name: 板块成分股（同花顺官方 REST）★
+  sub_category: 板块
+  datasource: fuyao
+  func_name: index_constituents
+  description: >-
+    ★ 本接口是 **fuyao 的独占项**：akshare 没有任何 `*_ths` 成分股接口
+    （cons 系列全是东财/富途）。按板块 thscode 返回当前成分股，
+    同时支持同花顺板块指数（886042.TI）与标准指数（000300.SH 沪深 300）。
+    ⚠️ 板块代码体系：akshare 给 881121/308614，fuyao 要 886042.TI，
+    两套不通 —— 用板块**中文名**做桥（见 fuyao_index_list）
+  params:
+    - { name: thscode, type: str, default: "886042.TI", desc: "板块/指数 thscode" }
+  returns:
+    - { name: thscode, type: str, desc: "成分股完整代码" }
+    - { name: ticker, type: str, desc: "纯代码" }
+    - { name: name, type: str, desc: "简称" }
+  sample_params: { thscode: "886042.TI" }
+  tags: [板块, 成分股, 同花顺, fuyao, 核心接口]
+  returns_verified: true
+  returns_note: "实测 886042.TI 返回 204 行 × 3 列（本机，2026-10-01）"
+
+- id: quote_history.fuyao_index_historical
+  name: 板块/指数历史 K 线（同花顺官方 REST）
+  sub_category: 板块
+  datasource: fuyao
+  func_name: index_historical
+  description: 同花顺-板块/指数历史日线。**每次仅一只**，窗口跨度 ≤ 10 年，指数无复权语义
+  params:
+    - { name: thscode, type: str, default: "886042.TI", desc: "板块/指数 thscode" }
+    - { name: start, type: date_ms, default: "20260101", desc: "开始日期 YYYYMMDD 或毫秒" }
+    - { name: end, type: date_ms, default: "20261231", desc: "结束日期 YYYYMMDD 或毫秒" }
+    - { name: interval, type: str, default: "1d", desc: "周期（当前仅支持 1d）" }
+  returns:
+    - { name: date_ms, type: int, desc: "K 线日期（毫秒时间戳）" }
+    - { name: open_price, type: float, desc: "开盘" }
+    - { name: high_price, type: float, desc: "最高" }
+    - { name: low_price, type: float, desc: "最低" }
+    - { name: close_price, type: float, desc: "收盘" }
+    - { name: volume, type: float, desc: "成交量（股）" }
+    - { name: turnover, type: float, desc: "成交额（元）" }
+  sample_params: { thscode: "886042.TI", start: "20260101", end: "20261231" }
+  tags: [板块, 同花顺, fuyao]
+  returns_verified: true
+  returns_note: "实测 886042.TI 拉 20260901~20260930 返回 21 行（本机，2026-10-01）"
+
+- id: quote_history.fuyao_prices_historical
+  name: 个股历史 K 线（同花顺官方 REST）
+  sub_category: 个股日线
+  datasource: fuyao
+  func_name: prices_historical
+  description: >-
+    同花顺-个股历史日线，支持三种复权口径。**每次仅一只**（不接受逗号），
+    窗口跨度 ≤ 10 年。
+    ⚠️ 回测/模拟盘的主源仍是 baostock —— 本接口**没有逐日 isST 与停牌标记**，
+    不可用于合规字段判定，只作交叉校验与研究参考
+  params:
+    - { name: thscode, type: str, default: "600519.SH", desc: "股票 thscode" }
+    - { name: start, type: date_ms, default: "20260101", desc: "开始日期 YYYYMMDD 或毫秒" }
+    - { name: end, type: date_ms, default: "20261231", desc: "结束日期 YYYYMMDD 或毫秒" }
+    - { name: interval, type: str, default: "1d", desc: "周期（当前仅支持 1d）" }
+    - { name: adjust, type: str, default: "backward", desc: "复权口径", options: ["backward", "forward", "none"] }
+  returns:
+    - { name: date_ms, type: int, desc: "K 线日期（毫秒时间戳）" }
+    - { name: open_price, type: float, desc: "开盘" }
+    - { name: high_price, type: float, desc: "最高" }
+    - { name: low_price, type: float, desc: "最低" }
+    - { name: close_price, type: float, desc: "收盘" }
+    - { name: volume, type: float, desc: "成交量（股）" }
+    - { name: turnover, type: float, desc: "成交额（元）" }
+  sample_params: { thscode: "600519.SH", start: "20260101", end: "20261231" }
+  tags: [个股日线, 同花顺, fuyao]
+  returns_verified: true
+  returns_note: "实测 600519.SH 拉 20260901~20260930 返回 21 行（本机，2026-10-01）"

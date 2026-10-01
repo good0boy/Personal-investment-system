@@ -14,14 +14,18 @@ from app.services.data_source.symbols import (
     board_of,
     csi_index_code,
     exchange_of,
+    from_thscode,
+    is_board_thscode,
     is_target_board,
     normalize,
     split_exchange,
     to_akshare,
     to_baostock,
+    to_board_thscode,
     to_plain,
     to_prefixed,
     to_suffixed,
+    to_thscode,
 )
 
 
@@ -223,3 +227,44 @@ def test_is_target_board_false(code6):
 )
 def test_csi_index_code(name, expected):
     assert csi_index_code(name) == expected
+
+
+# ======================================================================
+# thscode 互转（同花顺 fuyao REST）—— 2026-10-01 新增
+# ======================================================================
+def test_to_thscode_stocks_and_indices():
+    assert to_thscode("sh.600519") == "600519.SH"
+    assert to_thscode("sz.000001") == "000001.SZ"
+    assert to_thscode("bj.830799") == "830799.BJ"
+    # 指数同样适用（注意 sh.000001 是上证指数，不是平安银行）
+    assert to_thscode("sh.000001") == "000001.SH"
+    assert to_thscode("sz.399001") == "399001.SZ"
+
+
+def test_from_thscode_roundtrip():
+    for internal in ("sh.600519", "sz.000001", "bj.830799", "sh.000001", "sz.399001"):
+        assert from_thscode(to_thscode(internal)) == internal
+
+
+def test_from_thscode_rejects_bad_input():
+    """★ 板块指数（.TI）必须被拒绝 —— 硬转成内部格式会造出不存在的代码。"""
+    for bad in ("600519", "600519.XX", "886042.TI", "sh.600519", ""):
+        with pytest.raises(SymbolFormatError):
+            from_thscode(bad)
+
+
+def test_board_thscode_helpers():
+    assert to_board_thscode("881121") == "881121.TI"
+    assert is_board_thscode("886042.TI") is True
+    assert is_board_thscode("886042.ti") is True          # 大小写不敏感
+    assert is_board_thscode("600519.SH") is False
+    with pytest.raises(SymbolFormatError):
+        to_board_thscode("886042.TI")                      # 不接受已带后缀的
+    with pytest.raises(SymbolFormatError):
+        to_board_thscode("abcdef")
+
+
+def test_thscode_normalize_accepts_suffix_form():
+    """`normalize()` 早就能吃 600519.SH —— 与 fuyao 的 thscode 天然兼容。"""
+    assert normalize("600519.SH") == "sh.600519"
+    assert normalize("000001.SZ") == "sz.000001"

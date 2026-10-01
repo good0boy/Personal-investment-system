@@ -38,10 +38,11 @@ from app.core.errors import (
 )
 from app.core.logging import logger
 from app.repos import meta_repo
+from app.services.data_source.line_groups import line_group_of
 from app.services.data_source.throttle import (
     TIER_DEFINITE,
     TIER_SOFT,
-    CircuitBreaker,
+    GroupedCircuitBreaker,
     SlidingWindowRateLimiter,
     classify_limit_signal,
 )
@@ -335,6 +336,10 @@ class BaseDataSource(ABC):
     ★ 子类发起真实请求时**必须**用 `self._invoke(...)` 包裹，不得直接调用底层库。
       子类如需更严格的节流，覆盖类属性 `_min_interval` / `_max_calls_per_minute`
       / `_circuit_break_seconds` 即可。
+
+    ★ 熔断**按线路分组**（`GroupedCircuitBreaker`）：一个域名/接口族挂了只熔断
+      该组，不会把整个数据源的其他线路一起短路。分组由 `self._line_group(func_name)`
+      决定 —— 子类覆盖它即可（典型实现见 `akshare_client._line_group`）。
     """
 
     name: str = "base"
@@ -354,7 +359,7 @@ class BaseDataSource(ABC):
             max_calls_per_minute=self._max_calls_per_minute or 0,
             name=self.name,
         )
-        self._breaker = CircuitBreaker(
+        self._breaker = GroupedCircuitBreaker(
             cooldown=(
                 self._circuit_break_seconds
                 if self._circuit_break_seconds is not None
@@ -363,6 +368,15 @@ class BaseDataSource(ABC):
             name=self.name,
         )
         self._cache = TTLCache(ttl=self._cache_ttl or float(ds.try_cache_ttl))
+
+    # ---------- 熔断分组 ----------
+    def _line_group(self, func_name: str) -> str:
+        """返回该接口所属的熔断分组 key。
+
+        ⚠️ 默认按 `line_groups` 的全局映射查表。**各源只在映射确实属于自己
+           时才应覆盖本方法** —— fuyao 这类单主机源可以直接固定返回一个组名。
+        """
+        return line_group_of(func_name)
 
     # ---------- 元信息 ----------
     @property
@@ -476,6 +490,10 @@ class BaseDataSource(ABC):
             # 让"这次是强制刷新"在 datasource_log 里可查（便于排查假刷新类问题）
             param_text = f"{param_text} [force_refresh]".strip()
 
+        # --- 0) 熔断分组：同一条线路的接口共命运，不同线路互不连坐 ---
+        #     （东财 push2 被掐断不该带走同花顺与 push2ex，见 line_groups.py）
+        group = self._line_group(func_name)
+
         # --- 1) 缓存（force_refresh 时跳过读取）---
         if cache_key is not None and not force_refresh:
             hit = self._cache.get(cache_key)
@@ -483,8 +501,8 @@ class BaseDataSource(ABC):
                 self._write_log(func_name, "cache_hit", params=param_text)
                 return _copy_if_frame(hit)  # type: ignore[return-value]
 
-        # --- 2) 熔断：熔断期内一个请求都不发 ---
-        self._breaker.ensure_closed()
+        # --- 2) 熔断：该线路熔断期内一个请求都不发 ---
+        self._breaker.ensure_closed(group)
 
         # --- 3~4) 限流 + 重试 ---
         t0 = time.perf_counter()
@@ -495,12 +513,12 @@ class BaseDataSource(ABC):
             #   曾经这里无条件 trip() —— 一次网络抖动就熔断 60s，
             #   批量任务 44 个接口第一个就被短路，全部报"熔断中"。
             tier = rate_limit_tier(exc)
-            tripped = self._breaker.record_failure(str(exc), tier=tier)
+            tripped = self._breaker.record_failure(str(exc), tier=tier, key=group)
             self._write_log(
                 func_name, "rate_limited" if tripped else "rate_suspect",
                 params=param_text,
                 duration=round(time.perf_counter() - t0, 4),
-                error_message=f"[{tier}] {exc}",
+                error_message=f"[{tier}][{group}] {exc}",
             )
             raise
         except Exception as exc:
@@ -514,7 +532,7 @@ class BaseDataSource(ABC):
 
         # --- 5) 成功 → 清零连续失败计数 + 落缓存 + 记日志 ---
         # 没有这一步，零散的失败会永远累积，最终"拼"出一次假熔断
-        self._breaker.record_success()
+        self._breaker.record_success(group)
         duration = round(time.perf_counter() - t0, 4)
         rows = len(result) if isinstance(result, pd.DataFrame) else None
         if cache_key is not None:

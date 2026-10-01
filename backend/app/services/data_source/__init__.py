@@ -5,12 +5,20 @@
     一律通过本模块暴露的函数取数。这样换源/加缓存/改限流只改这一层。
 
 分工：
-    baostock = 行情主源（模块 3 回测、模块 4 模拟盘）
-    akshare  = 广度源（模块 1 数据分类、实时行情、基本面）
+    baostock = 行情主源（模块 3 回测、模块 4 模拟盘；唯一提供逐日 isST/停牌）
+    akshare  = 广度源（模块 1 数据分类、基本面、以及**同花顺板块** `*_ths`）
+    fuyao    = 特色数据源（同花顺官方 REST：涨跌停池/连板天梯/板块成分/快照）
+
+    ★ 为什么 fuyao 不占 `primary` / `secondary` 槽位（2026-10-01 决策）：
+      那两个槽位的语义是"日线主源 / 广度源"，决定 `fetch_daily` 的默认走向；
+      而 fuyao 的价值在**独占端点**（板块成分、按历史交易日取涨跌停池），
+      不在"再挂一个通用日线源"。所以给它独立的 `get_fuyao()` 访问器。
 
 用法：
     from app.services.data_source import fetch_daily, fetch_index_daily
+    from app.services.data_source import get_fuyao
     df = fetch_daily("sh.600519", "2024-01-01", "2024-12-31")
+    pool = get_fuyao().limit_up_pool("20260929")
 """
 from __future__ import annotations
 
@@ -35,21 +43,27 @@ from app.services.data_source.base import (
     to_compact_date,
     with_retry,
 )
+from app.services.data_source.fuyao_client import fuyao_client
 from app.services.data_source.symbols import (
     TARGET_BOARDS,
     board_of,
     csi_index_code,
+    from_thscode,
+    is_board_thscode,
     is_target_board,
     normalize,
     split_exchange,
     to_akshare,
     to_baostock,
+    to_board_thscode,
     to_plain,
     to_prefixed,
     to_suffixed,
+    to_thscode,
 )
 from app.services.data_source.throttle import (
     CircuitBreaker,
+    GroupedCircuitBreaker,
     SlidingWindowRateLimiter,
     looks_rate_limited,
 )
@@ -58,8 +72,10 @@ __all__ = [
     # 客户端
     "baostock_client",
     "akshare_client",
+    "fuyao_client",
     "get_primary",
     "get_secondary",
+    "get_fuyao",
     "shutdown_all",
     # 便捷取数
     "fetch_daily",
@@ -67,6 +83,7 @@ __all__ = [
     "fetch_trade_dates",
     "fetch_all_trade_dates",
     "fetch_spot",
+    "fetch_spot_fuyao",
     "fetch_all_stock",
     "fetch_index_constituents",
     "fetch_stock_industry",
@@ -83,6 +100,7 @@ __all__ = [
     # 节流与熔断
     "SlidingWindowRateLimiter",
     "CircuitBreaker",
+    "GroupedCircuitBreaker",
     "looks_rate_limited",
     "with_retry",
     "call_with_retry",
@@ -94,6 +112,10 @@ __all__ = [
     "to_prefixed",
     "to_suffixed",
     "to_akshare",
+    "to_thscode",
+    "from_thscode",
+    "to_board_thscode",
+    "is_board_thscode",
     "board_of",
     "is_target_board",
     "TARGET_BOARDS",
@@ -126,9 +148,18 @@ def get_secondary() -> BaseDataSource:
     raise DataSourceError(f"未知的广度数据源：{key!r}")
 
 
+@lru_cache(maxsize=1)
+def get_fuyao() -> BaseDataSource:
+    """特色数据源（同花顺 fuyao REST）。
+
+    ★ 刻意**不放进 `primary`/`secondary` 槽位** —— 见本模块 docstring。
+    """
+    return fuyao_client
+
+
 def shutdown_all() -> None:
     """关闭所有数据源会话（应用退出时调用）。"""
-    for client in (baostock_client, akshare_client):
+    for client in (baostock_client, akshare_client, fuyao_client):
         try:
             client.logout()
         except Exception as exc:
@@ -200,8 +231,27 @@ def fetch_all_trade_dates(
 
 
 def fetch_spot() -> pd.DataFrame:
-    """全市场实时快照（仅 akshare 提供）。"""
+    """全市场实时快照（akshare `stock_zh_a_spot_em`，走东财 push2）。
+
+    ⚠️ 2026-10-01 实测：东财 `push2.eastmoney.com` 在本机被网络掐断，
+       本函数会抛 `DataSourceRateLimited`（soft 档）。**它不是唯一选择** ——
+       需要可用快照时请用 `fetch_spot_fuyao()`（同花顺 fuyao REST）。
+
+       保留本函数是为了"换台机器/换网络可能又能用"，并让失败点集中可见。
+    """
     return akshare_client.fetch_spot()
+
+
+def fetch_spot_fuyao(
+    thscodes: str | None = None, limit: int = 100, offset: int = 0
+) -> pd.DataFrame:
+    """实时快照（同花顺 fuyao REST）。
+
+    ⚠️ 列名与 `fetch_spot()` **不同**（这里是 fuyao 原始字段：
+       `thscode/ticker/last_price/price_change_ratio_pct/...`，全英文），
+       两者不可互换 —— 所以没有做成"自动降级"，避免调用方拿到两套 schema。
+    """
+    return fuyao_client.snapshot(thscodes=thscodes, limit=limit, offset=offset)
 
 
 def fetch_all_stock(day: str | None = None) -> pd.DataFrame:
@@ -250,7 +300,7 @@ def health_all(*, deep: bool = False) -> list[dict[str, Any]]:
     而"库能导入但连不上网"恰恰是最需要被发现的故障。前端据此区分。
     """
     out: list[dict[str, Any]] = []
-    for client in (baostock_client, akshare_client):
+    for client in (baostock_client, akshare_client, fuyao_client):
         try:
             status = client.health(deep=deep)
         except Exception as exc:
@@ -265,7 +315,10 @@ def health_all(*, deep: bool = False) -> list[dict[str, Any]]:
 
 def throttle_stats_all() -> list[dict[str, Any]]:
     """所有数据源的限流 / 熔断 / 缓存状态（供系统状态页展示）。"""
-    return [client.throttle_stats() for client in (baostock_client, akshare_client)]
+    return [
+        client.throttle_stats()
+        for client in (baostock_client, akshare_client, fuyao_client)
+    ]
 
 
 def _pick(source: str | None) -> BaseDataSource:
@@ -276,4 +329,6 @@ def _pick(source: str | None) -> BaseDataSource:
         return baostock_client
     if key == "akshare":
         return akshare_client
-    raise DataSourceError(f"未知数据源：{source!r}（可选 baostock / akshare）")
+    if key == "fuyao":
+        return fuyao_client
+    raise DataSourceError(f"未知数据源：{source!r}（可选 baostock / akshare / fuyao）")

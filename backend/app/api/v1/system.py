@@ -19,7 +19,12 @@ from app.repos import db, meta_repo
 from app.scheduler import scheduler as sched
 from app.schemas.common import ApiResponse, HealthData
 from app.services import calendar_service, data_store, datasource_matrix
-from app.services.data_source import akshare_client, baostock_client, health_all
+from app.services.data_source import (
+    akshare_client,
+    baostock_client,
+    fuyao_client,
+    health_all,
+)
 
 router = APIRouter(tags=["system"])
 
@@ -248,9 +253,15 @@ def datasource_probe(name: str) -> ApiResponse[dict[str, Any]]:
        页面上显示正常但其实没连过网（这正是本轮修掉的假刷新类缺陷）。
     """
     key = name.lower()
-    client = {"baostock": baostock_client, "akshare": akshare_client}.get(key)
+    client = {
+        "baostock": baostock_client,
+        "akshare": akshare_client,
+        "fuyao": fuyao_client,
+    }.get(key)
     if client is None:
-        raise InvalidParamError(f"不支持的数据源：{name}（可选 baostock / akshare）")
+        raise InvalidParamError(
+            f"不支持的数据源：{name}（可选 baostock / akshare / fuyao）"
+        )
 
     out: dict[str, Any] = {"name": key, "version": client.version, "probes": {}}
     if key == "baostock":
@@ -263,22 +274,41 @@ def datasource_probe(name: str) -> ApiResponse[dict[str, Any]]:
     except Exception as exc:
         out["health"] = {"available": False, "message": f"{type(exc).__name__}: {exc}", "deep": True}
 
-    # 2) 交易日历真实取值
-    try:
-        t0 = time.perf_counter()
-        days = client.fetch_trade_dates("2024-01-01", "2024-12-31", force_refresh=True)
-        out["probes"]["trade_calendar"] = {
-            "ok": bool(days),
-            "count": len(days),
-            "cache_bypassed": True,
-            "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
-        }
-    except Exception as exc:
-        out["probes"]["trade_calendar"] = {
-            "ok": False,
-            "cache_bypassed": True,
-            "error": str(exc)[:300],
-        }
+    # 2) 真实取值探测
+    #    ⚠️ fuyao 的 fetch_trade_dates 是**委托 baostock** 的（它没有日历端点），
+    #       拿它当探测目标等于"探的不是自己"。所以 fuyao 换成打自己的代码表。
+    if key == "fuyao":
+        try:
+            t0 = time.perf_counter()
+            df = fuyao_client.tickers_list("a-share", limit=1, force_refresh=True)
+            out["probes"]["tickers_list"] = {
+                "ok": df is not None and len(df) > 0,
+                "count": 0 if df is None else len(df),
+                "cache_bypassed": True,
+                "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
+            }
+        except Exception as exc:
+            out["probes"]["tickers_list"] = {
+                "ok": False,
+                "cache_bypassed": True,
+                "error": str(exc)[:300],
+            }
+    else:
+        try:
+            t0 = time.perf_counter()
+            days = client.fetch_trade_dates("2024-01-01", "2024-12-31", force_refresh=True)
+            out["probes"]["trade_calendar"] = {
+                "ok": bool(days),
+                "count": len(days),
+                "cache_bypassed": True,
+                "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
+            }
+        except Exception as exc:
+            out["probes"]["trade_calendar"] = {
+                "ok": False,
+                "cache_bypassed": True,
+                "error": str(exc)[:300],
+            }
 
     out["throttle"] = client.throttle_stats()
     return ApiResponse.ok(out)
@@ -312,6 +342,15 @@ def current_config() -> ApiResponse[dict[str, Any]]:
                 "channel": settings.env.wecom_channel,
                 "wecom_configured": settings.env.wecom_webhook_configured,
                 "wecom_key_masked": settings.env.wecom_webhook_key_masked,
+            },
+            # ★ 同花顺 fuyao 的密钥**不在** settings.datasource 里（那里只有
+            #   "读哪个环境变量"的名字）。这里单独给脱敏状态 ——
+            #   绝不能把 settings.env.fuyao_api_key 放进任何返回值。
+            "fuyao": {
+                "configured": settings.env.fuyao_configured,
+                "key_masked": settings.env.fuyao_key_masked,
+                "key_env": settings.datasource.fuyao.api_key_env,
+                "base_url": settings.datasource.fuyao.base_url,
             },
         }
     )

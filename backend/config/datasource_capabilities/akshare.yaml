@@ -3,6 +3,10 @@
 # 模块 1「数据源能力矩阵」页面的数据来源。
 # ============================================================
 
+# ★ 2026-10-01 重大变更：东财 push2 / push2his 域名在本机被网络掐断
+#   （ConnectionError / RemoteDisconnected，非限频）。受影响的能力已在下文
+#   逐项标注为「本机失效」，并注明由同花顺承接的路径。
+#   仅 push2ex（涨停板系列）与 datacenter-web（龙虎榜/沪深港通）仍可用。
 name: "akshare"
 display_name: "AKShare"
 role: "广度补充源"
@@ -52,25 +56,29 @@ auth:
 # 能力矩阵
 capabilities:
   daily_kline:
-    supported: true
-    quality: "good"
-    note: "stock_zh_a_hist，支持 qfq/hfq。⚠️ 无 isST/tradestatus 字段"
-    priority: "备选"
+    supported: false
+    quality: "none"
+    note: >-
+      ❌ 本机失效：stock_zh_a_hist 走 push2his.eastmoney.com，实测被掐断，
+      条目已从接口目录下架。历史日线请用 baostock（主源）或 fuyao
+    priority: "-" 
   minute_kline:
-    supported: true
-    quality: "good"
-    note: "stock_zh_a_hist_min_em，支持 1/5/15/30/60 分钟"
-    priority: "主用（分钟级）"
+    supported: false
+    quality: "none"
+    note: "❌ 本机失效：stock_zh_a_hist_min_em 走 push2his，实测被掐断，已下架"
+    priority: "-" 
   adjust_factor:
-    supported: true
-    quality: "good"
-    note: "stock_zh_a_hist 的 adjust 参数"
-    priority: "备选"
+    supported: false
+    quality: "none"
+    note: "❌ 本机失效：依赖 stock_zh_a_hist（push2his），已下架"
+    priority: "-" 
   realtime_quote:
-    supported: true
-    quality: "excellent"
-    note: "★ stock_zh_a_spot_em() 无参，一次拿全市场 5000+ 只"
-    priority: "唯一来源"
+    supported: false
+    quality: "none"
+    note: >-
+      ❌ 本机失效：stock_zh_a_spot_em 走 push2.eastmoney.com（82.push2），
+      实测被掐断，条目已下架。**改用 fuyao 的 /api/a-share/prices/snapshot**
+    priority: "-" 
   daily_st_status:
     supported: false
     quality: "none"
@@ -92,20 +100,20 @@ capabilities:
     note: "❌ index_stock_cons_* 三个接口均不接受日期参数，只能拿当前成分"
     priority: "-"
   all_stock_list:
-    supported: true
-    quality: "fair"
-    note: "stock_zh_a_spot_em 可拿当前全市场，无历史"
-    priority: "备选"
+    supported: false
+    quality: "none"
+    note: "❌ 本机失效：依赖 stock_zh_a_spot_em（push2）。改用 fuyao /api/meta/tickers/list"
+    priority: "-" 
   trade_calendar:
     supported: true
     quality: "excellent"
     note: "tool_trade_date_hist_sina() 实测 8797 行（1990-12-19 ~ 2026-12-31）"
     priority: "备选"
   index_daily:
-    supported: true
-    quality: "good"
-    note: "index_zh_a_hist（入参为 6 位纯数字）"
-    priority: "备选"
+    supported: false
+    quality: "none"
+    note: "❌ 本机失效：index_zh_a_hist 走 push2his，已下架。指数行情用 baostock 或 fuyao"
+    priority: "-" 
   fundamentals:
     supported: true
     quality: "excellent"
@@ -114,22 +122,37 @@ capabilities:
   industry_classification:
     supported: true
     quality: "good"
-    note: "stock_board_industry_name_em 等"
-    priority: "备选"
+    note: >-
+      ★ 2026-10-01 改由同花顺承担：stock_board_industry_name_ths（本机实测 90 行 /
+      0.2s）。东财的 stock_board_industry_name_em 走 push2，已下架
+    priority: "主用（同花顺）"
   sector_board:
     supported: true
-    quality: "excellent"
-    note: "★ 行业/概念板块列表与行情"
-    priority: "主用"
+    quality: "good"
+    note: >-
+      ★ 2026-10-01 改由同花顺承担：列表 stock_board_{industry,concept}_name_ths、
+      历史 stock_board_*_index_ths（实测半导体拉 2026 全年正常）。
+      ⚠️ akshare **没有** *_ths 成分股接口 → 成分股由 fuyao 承担
+    priority: "主用（同花顺）"
   fund_flow:
     supported: true
-    quality: "excellent"
-    note: "★ stock_individual_fund_flow 个股资金流"
-    priority: "主用"
+    quality: "fair"
+    note: >-
+      ⚠️ 个股资金流（stock_individual_fund_flow / _rank）走 push2/push2his，
+      **本机失效已下架**；改成同花顺的 stock_fund_flow_industry（行业资金流，实测可用）
+    priority: "备选（仅行业级）"
+  limit_pool:
+    supported: true
+    quality: "fair"
+    note: >-
+      ⚠️ stock_zt_pool_em 等 6 个涨停板接口走 push2ex.eastmoney.com，本机**可用**
+      （实测 0.2~0.3s）；但该接口**只保留最近 1~2 个交易日**，历史日期一律空表。
+      要历史涨跌停请用 fuyao 的 limit_up_pool（date_ms 可指定历史交易日）
+    priority: "备选（仅近 1~2 日）"
   dragon_tiger:
     supported: true
     quality: "excellent"
-    note: "★ stock_lhb_detail_em 龙虎榜"
+    note: "★ stock_lhb_detail_em 龙虎榜（走 datacenter-web，本机可用）"
     priority: "主用"
 
 # 稳定性评估
@@ -145,3 +168,5 @@ pitfalls:
   - "index_stock_cons_* 系列不接受日期参数，拿不到历史成分股"
   - "stock_zh_a_hist 返回的成交量单位是【手】，与 baostock 的【股】不同（本项目的 akshare_client 已统一处理）"
   - "pip 默认会装 pandas 3.0，需显式约束 pandas>=2.2,<3.0"
+  - "★ 2026-10-01：东财 push2 / push2his 域名在本机被网络掐断（RemoteDisconnected），相关接口已从目录下架；同花顺（10jqka）与 push2ex.datemoney 正常"
+  - "★ 熔断已按线路分组（data_source/line_groups.py）：push2 线路故障不再连坐同花顺与 push2ex"

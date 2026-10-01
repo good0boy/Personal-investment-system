@@ -114,6 +114,11 @@ capabilities:
     quality: "good"
     note: "moneyflow / moneyflow_hsgt（北向）⚠️ 需积分"
     priority: "备选"
+  limit_pool:
+    supported: false
+    quality: "none"
+    note: "（未实测；本轮未接入涨跌停池）"
+    priority: "-"
   dragon_tiger:
     supported: true
     quality: "good"

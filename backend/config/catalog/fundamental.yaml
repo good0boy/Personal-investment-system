@@ -386,3 +386,30 @@
   tags: [名单, baostock, 主源]
   returns_verified: true
   returns_note: "实测 5638 行 × 3 列；首次登录+查询约 10 秒"
+
+# ============================================================
+# 同花顺 fuyao REST —— 标的代码表（2026-10-01 新增）
+# ============================================================
+- id: fundamental.fuyao_tickers_list
+  name: 标的代码表（同花顺官方 REST）
+  sub_category: 股票名单
+  datasource: fuyao
+  func_name: tickers_list
+  description: >-
+    同花顺-标的列表（A股/指数/基金/期货/期权等）。含上市日期与交易所后缀，
+    是 thscode（600519.SH）与本地 sh.600519 互转的对端依据
+  params:
+    - { name: asset_type, type: str, default: "a-share", desc: "资产类型", options: ["a-share", "a-share-index", "fund-etf", "fund-lof", "fund-otc", "forex", "futures", "options"] }
+    - { name: limit, type: int, default: 60, desc: "每页条数（服务端上限 10000）" }
+  returns:
+    - { name: thscode, type: str, desc: "600519.SH" }
+    - { name: ticker, type: str, desc: "6 位代码" }
+    - { name: name, type: str, desc: "名称" }
+    - { name: exchange, type: str, desc: "交易所后缀 SH/SZ/BJ" }
+    - { name: asset_type, type: str, desc: "规范化资产类型" }
+    - { name: currency, type: str, desc: "币种（A 股为 CNY）" }
+    - { name: list_date, type: str, desc: "上市日期（可能为 null）" }
+  sample_params: { asset_type: "a-share", limit: 60 }
+  tags: [股票名单, 同花顺, fuyao]
+  returns_verified: true
+  returns_note: "实测 a-share 正常返回（本机，2026-10-01）"

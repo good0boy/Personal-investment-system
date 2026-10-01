@@ -105,6 +105,20 @@ datasource:
     cache_ttl: 300               # 历史类接口缓存 TTL
     spot_cache_ttl: 10           # 实时快照缓存 TTL（实时数据不能缓存太久）
 
+  # ★ 同花顺 fuyao REST —— 特色数据源（涨跌停池 / 板块成分 / 快照 / 元信息）
+  #   2026-10-01 实测：东财 push2/push2his 在本机被网络掐断，batch 板块与快照
+  #   数据改由同花顺承担（akshare 内置 *_ths + 本接口）。
+  #   ⚠️ API Key 不在本文件 —— 真值在 .env 的 FUYAO_API_KEY，
+  #      这里只记录"去哪个环境变量取"，避免密钥随 /system/config 泄露。
+  fuyao:
+    api_key_env: "FUYAO_API_KEY"
+    base_url: "https://fuyao.aicubes.cn"
+    min_interval: 0.2            # 官方 REST，非爬虫，可比东财宽松
+    max_calls_per_minute: 60
+    circuit_break_seconds: 120   # 触发限流后静默 2 分钟
+    cache_ttl: 300               # 历史类（涨跌停池/板块成分）缓存 TTL
+    timeout: 20
+
 # ---------------- 调度 ----------------
 scheduler:
   enabled: true

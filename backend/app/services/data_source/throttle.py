@@ -362,6 +362,178 @@ class CircuitBreaker:
             }
 
 
+class GroupedCircuitBreaker:
+    """**按线路分组**的熔断门面 —— 一条线路挂了只熔断该线路，不连坐。
+
+    ★ 为什么需要它（2026-10-01 实测故障）
+    ------------------------------------
+    东财 `push2` 域名在本机被网络掐断 → soft 信号连踩 3 次 → 原来的
+    单例 `CircuitBreaker` 把**整个 akshare 通道**封 300 秒 →
+    连本机正常的 `push2ex`（涨停池）与同花顺接口也一起报"数据源触发限频"。
+    现象是"所有东财接口都挂了"，真相是一个域名把整个源带下了线。
+
+    本类用 `dict[key, CircuitBreaker]` 隔离各组：`key` 由
+    `line_groups.line_group_of()` 从 `func_name` 推出。
+
+    ★ 设计取舍：**不修改 `CircuitBreaker` 本身**
+    ------------------------------------------
+    保留单组版 `CircuitBreaker` 作原样单元（现有 20+ 条断言零改动），
+    本类只做"分桶 + 分发 + 聚合"。风险最小，且两边职责清晰。
+
+    ★ `key` 缺省的语义（刻意设计，用于向后兼容）
+    --------------------------------------------
+    - `is_open()` / `remaining()` / `stats()` / `wait_until_closed()`
+      → **聚合**：任一组熔断即视为"这个源现在不能整体用"。
+    - `reset()` → **全部重置**（就是运维要的"一键解除"）。
+    - `ensure_closed()` / `record_failure()` / `record_success()` / `trip()`
+      → 命中 `default_key` 组，行为与旧单例完全一致。
+    """
+
+    def __init__(
+        self,
+        cooldown: float = 300.0,
+        *,
+        soft_cooldown: float = 60.0,
+        soft_threshold: int = 3,
+        name: str = "",
+        default_key: str = "default",
+    ) -> None:
+        self.cooldown = max(0.0, float(cooldown))
+        self.soft_cooldown = max(0.0, float(soft_cooldown))
+        self.soft_threshold = max(1, int(soft_threshold))
+        self.name = name
+        self.default_key = default_key
+        self._lock = threading.Lock()
+        self._groups: dict[str, CircuitBreaker] = {}
+
+    # ------------------------------------------------------------------
+    def _group(self, key: str | None) -> CircuitBreaker:
+        """取（必要时创建）某组的熔断器。"""
+        k = key or self.default_key
+        with self._lock:
+            cb = self._groups.get(k)
+            if cb is None:
+                cb = CircuitBreaker(
+                    self.cooldown,
+                    soft_cooldown=self.soft_cooldown,
+                    soft_threshold=self.soft_threshold,
+                    name=f"{self.name}:{k}" if self.name else k,
+                )
+                self._groups[k] = cb
+            return cb
+
+    def group_keys(self) -> list[str]:
+        """已创建过状态的组名（供状态查询 / 测试断言）。"""
+        with self._lock:
+            return sorted(self._groups)
+
+    # ------------------------------------------------------------------
+    def ensure_closed(self, key: str | None = None) -> None:
+        """该组熔断中 → 抛 DataSourceRateLimited；否则放行。"""
+        self._group(key).ensure_closed()
+
+    # ⚠️ `reason` 必须是第一个位置参数 —— `base.py` 以 `record_failure(str(exc), tier=...)`
+    #    的位置传参调用，签名顺序改了会静默把异常文本当成 key。
+    def record_failure(
+        self, reason: str = "", *, tier: str | None = None, key: str | None = None
+    ) -> bool:
+        """记录一次限频信号，返回**是否已触发熔断**。"""
+        return self._group(key).record_failure(reason, tier=tier)
+
+    def record_success(self, key: str | None = None) -> None:
+        self._group(key).record_success()
+
+    def trip(
+        self, reason: str = "", *, cooldown: float | None = None, key: str | None = None
+    ) -> None:
+        """**强制**熔断某组（不累计次数）。用于测试与人工干预。"""
+        self._group(key).trip(reason, cooldown=cooldown)
+
+    # ------------------------------------------------------------------
+    def is_open(self, key: str | None = None) -> bool:
+        """`key` 给定 → 只看该组；缺省 → **任一组**熔断即 True。"""
+        if key is not None:
+            return self._group(key).is_open()
+        with self._lock:
+            groups = list(self._groups.values())
+        return any(cb.is_open() for cb in groups)
+
+    def remaining(self, key: str | None = None) -> float:
+        """`key` 给定 → 该组剩余秒数；缺省 → 各组中**最长**的剩余。"""
+        if key is not None:
+            return self._group(key).remaining()
+        with self._lock:
+            groups = list(self._groups.values())
+        return max((cb.remaining() for cb in groups), default=0.0)
+
+    def wait_until_closed(
+        self, key: str | None = None, *, max_wait: float = 300.0, poll: float = 1.0
+    ) -> float:
+        """熔断中则阻塞等待（**批量任务**专用）。缺省 = 等所有组结束。"""
+        if key is not None:
+            return self._group(key).wait_until_closed(max_wait=max_wait, poll=poll)
+
+        waited = 0.0
+        while waited < max_wait:
+            remaining = self.remaining()
+            if remaining <= 0:
+                break
+            nap = min(poll, remaining)
+            time.sleep(nap)
+            waited += nap
+        if waited > 0:
+            logger.info(
+                f"[{self.name or 'datasource'}] 批量任务等待熔断结束 {waited:.1f}s"
+            )
+        return waited
+
+    def reset(self, key: str | None = None) -> None:
+        """`key` 给定 → 重置该组；缺省 → **全部重置**（运维"一键解除"）。"""
+        if key is not None:
+            self._group(key).reset()
+            return
+        with self._lock:
+            groups = list(self._groups.values())
+        for cb in groups:
+            cb.reset()
+
+    def stats(self, key: str | None = None) -> dict[str, Any]:
+        """`key` 给定 → 该组明细；缺省 → 聚合（顶层取最严重的组 + `groups` 明细）。
+
+        顶层字段保持与单组版**完全相同的键** —— 前端与既有测试不必判空，
+        `open` / `remaining_seconds` 等直接可用。
+        """
+        if key is not None:
+            return self._group(key).stats()
+
+        with self._lock:
+            items = [(k, cb.stats()) for k, cb in self._groups.items()]
+
+        if items:
+            worst_key, worst = max(
+                items, key=lambda kv: kv[1]["remaining_seconds"]
+            )
+            base = dict(worst)
+            base["name"] = f"{self.name}:{worst_key}" if self.name else worst_key
+        else:
+            base = {
+                "name": self.name,
+                "open": False,
+                "remaining_seconds": 0.0,
+                "cooldown_seconds": self.cooldown,
+                "soft_cooldown_seconds": self.soft_cooldown,
+                "soft_strikes": 0,
+                "soft_threshold": self.soft_threshold,
+                "trip_count": 0,
+                "last_trip_at": None,
+                "reason": "",
+            }
+
+        base["groups"] = [{"key": k, **s} for k, s in sorted(items)]
+        base["open_groups"] = [k for k, s in sorted(items) if s["open"]]
+        return base
+
+
 # ======================================================================
 # 限频信号识别
 # ======================================================================

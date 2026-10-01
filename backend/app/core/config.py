@@ -58,6 +58,28 @@ class EnvSettings(BaseSettings):
 
     akshare_version_pin: str = ""
 
+    # ---------- 同花顺 fuyao REST（涨跌停 / 板块 / 特色数据）----------
+    # ★ 密钥只允许出现在这里（EnvSettings）—— 它来自 .env，且
+    #   `DatasourceConfig` 只存"读哪个环境变量"的名字，绝不含真值。
+    #   原因：`GET /api/v1/system/config` 会 `model_dump()` 整个 datasource 段，
+    #   把 key 放进去就会随接口泄露。对外只能给 `fuyao_key_masked`。
+    fuyao_api_key: str = ""
+
+    @property
+    def fuyao_configured(self) -> bool:
+        """是否已配置 fuyao API Key（不打印 key 本身）。"""
+        return bool(self.fuyao_api_key.strip())
+
+    @property
+    def fuyao_key_masked(self) -> str:
+        """脱敏后的 key，仅用于界面展示。"""
+        key = self.fuyao_api_key.strip()
+        if not key:
+            return ""
+        if len(key) <= 8:
+            return "*" * len(key)
+        return f"{key[:4]}****{key[-4:]}"
+
     @property
     def wecom_webhook_configured(self) -> bool:
         """是否已配置可用的 Webhook（不打印 URL 本身）。"""
@@ -175,6 +197,26 @@ class AkshareThrottleConfig(BaseModel):
     spot_cache_ttl: int = 10             # 实时快照缓存
 
 
+class FuyaoThrottleConfig(BaseModel):
+    """同花顺 fuyao REST 的节流与连接参数。
+
+    ★ 这里**故意不含 API Key** —— 只记录"去哪个环境变量取"（`api_key_env`）。
+      密钥真值在 `EnvSettings.fuyao_api_key`（来自 .env）。这条边界是硬的：
+      `GET /api/v1/system/config` 会把本对象整体 `model_dump()` 出去。
+
+    实测（2026-10-01）：`fuyao.aicubes.cn` 本机可达，首页响应 ~0.13s；
+    官方声明"不限制累计调用次数"，但会动态限流（HTTP 429 / `code=4001`）。
+    """
+
+    api_key_env: str = "FUYAO_API_KEY"          # 仅键名，不是值
+    base_url: str = "https://fuyao.aicubes.cn"
+    min_interval: float = 0.2                   # 比东财宽松（官方 REST，非爬虫）
+    max_calls_per_minute: int = 60
+    circuit_break_seconds: int = 120            # 触发限流后静默时长
+    cache_ttl: int = 300                        # 历史类接口缓存
+    timeout: int = 20
+
+
 class DatasourceConfig(BaseModel):
     primary: str = "baostock"
     secondary: str = "akshare"
@@ -183,6 +225,7 @@ class DatasourceConfig(BaseModel):
     timeout: int = 30
     try_cache_ttl: int = 300
     akshare: AkshareThrottleConfig = Field(default_factory=AkshareThrottleConfig)
+    fuyao: FuyaoThrottleConfig = Field(default_factory=FuyaoThrottleConfig)
 
 
 class CronSpec(BaseModel):

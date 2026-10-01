@@ -49,6 +49,7 @@ groups:
     note: 情绪面辅助数据，可选。
     items:
       - sector_board
+      - limit_pool
       - fund_flow
       - dragon_tiger
 
@@ -117,6 +118,10 @@ capabilities:
   sector_board:
     label: 板块与概念
     desc: 行业板块、概念板块的列表、成分与行情
+    critical: false
+  limit_pool:
+    label: 涨停跌停池
+    desc: 按交易日取涨停/跌停/炸板/连板股票池（★ 能否指定**历史**日期是关键分水岭）
     critical: false
   fund_flow:
     label: 资金流向

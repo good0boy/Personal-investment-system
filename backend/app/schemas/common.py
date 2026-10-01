@@ -66,11 +66,32 @@ class RateLimiterStats(BaseModel):
     max_wait_seconds: float = 0.0
 
 
+class BreakerGroupStats(BaseModel):
+    """熔断的**单个线路组**状态（`GroupedCircuitBreaker`，2026-10-01 起）。
+
+    熔断按线路分组：东财 push2 挂了只熔断 push2，不会把同花顺与 push2ex 一起短路。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    key: str = ""
+    open: bool = False
+    remaining_seconds: float = 0.0
+    soft_strikes: int = 0
+    soft_threshold: int = 0
+    trip_count: int = 0
+    last_trip_at: str | None = None
+    reason: str = ""
+
+
 class CircuitBreakerStats(BaseModel):
-    """熔断器状态（`throttle.CircuitBreaker.stats()`）。
+    """熔断器状态（`throttle.GroupedCircuitBreaker.stats()`）。
 
     `open=True` 表示**当前正被熔断**，此期间一个请求都不会发出去；
     `soft_strikes/soft_threshold` 用于显示"疑似限频 2/3 次"这类中间态。
+
+    ★ 顶层字段是**聚合值**（取最严重的组），`groups` 是分组明细 ——
+      这样老的读取方（只看 `open`）不用改，新的读取方（系统页）能逐线路展示。
     """
 
     model_config = ConfigDict(extra="allow")
@@ -85,6 +106,10 @@ class CircuitBreakerStats(BaseModel):
     trip_count: int = 0
     last_trip_at: str | None = None
     reason: str = ""
+    #: 各线路组明细；单组或从未熔断时为空列表
+    groups: list[BreakerGroupStats] = Field(default_factory=list)
+    #: 当前处于熔断状态的线路组 key（空 = 没有熔断）
+    open_groups: list[str] = Field(default_factory=list)
 
 
 class ThrottleStats(BaseModel):

@@ -2,7 +2,7 @@
 
 单机自用的 A 股投资研究系统。本地开发运行，迭代完善后再部署到内网服务器。
 
-**当前进度：阶段 0~5 全部完成，P0/P1 优化项已落地** ✅（733 项测试全绿）
+**当前进度：阶段 0~5 全部完成，P0/P1 优化项已落地** ✅（784 项测试全绿）
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
@@ -43,7 +43,7 @@
 | 层 | 选型 |
 |---|---|
 | 后端 | Python 3.13 + FastAPI + Uvicorn + Pydantic v2 |
-| 数据源 | **baostock**（行情主源）+ **akshare**（广度补充） |
+| 数据源 | **baostock**（行情主源）+ **akshare**（广度补充 + 同花顺板块 `*_ths`）+ **同花顺 Fuyao REST**（涨跌停/板块成分） |
 | 存储 | Parquet（大表）+ DuckDB（查询）+ SQLite `meta.db`（元数据）+ YAML（配置） |
 | 调度 | APScheduler（进程内） |
 | 前端 | Vue 3 + Vite + TypeScript + Element Plus + ECharts |
@@ -220,7 +220,7 @@ npm run type-check   # 类型检查
 npm run build        # 生产构建
 
 # ---------- 测试与静态检查（cd backend）----------
-python -m pytest -q                                  # 全量测试（733 项）
+python -m pytest -q                                  # 全量测试（784 项）
 python -m pytest -m network                          # 真实发送用例（默认 skip）
 python -m ruff check app/ tests/                     # 静态检查
 
@@ -245,7 +245,9 @@ docker compose -f deploy/docker-compose.yml down
 │   │   │   ├── data_source/           ★ 数据源抽象层
 │   │   │   │   ├── symbols.py         5 种代码格式互转
 │   │   │   │   ├── baostock_client.py 行情主源
-│   │   │   │   └── akshare_client.py  广度源
+│   │   │   │   ├── akshare_client.py  广度源（含同花顺 *_ths）
+│   │   │   │   ├── fuyao_client.py    同花顺官方 REST
+│   │   │   │   └── line_groups.py     熔断分组表
 │   │   │   ├── data_store.py          ★ 唯一允许读写 Parquet/DuckDB 的地方
 │   │   │   ├── calendar_service.py    交易日历
 │   │   │   ├── cost_model.py          ★ 唯一交易成本实现
@@ -302,7 +304,7 @@ docker compose -f deploy/docker-compose.yml down
 
 ### 1. 数据源只能通过抽象层访问
 
-`baostock` / `akshare` **只能被 `services/data_source/` 下的 client 导入**。业务层一律走 `data_source` 抽象层。
+`baostock` / `akshare` / `fuyao` **只能被 `services/data_source/` 下的 client 导入**。业务层一律走 `data_source` 抽象层。
 
 ```python
 # ✅ 正确
@@ -312,6 +314,7 @@ df = fetch_daily("sh.600519", "2024-01-01", "2024-12-31")
 # ❌ 错误
 import baostock as bs
 import akshare as ak
+import httpx  # Fuyao REST 走 HTTP，不经过 akshare
 ```
 
 *理由*：数据源有 5 种代码格式、两种会话模型。换源/加缓存/改限流只改一个目录。

@@ -71,4 +71,7 @@ def test_meta_file_is_not_listed_as_datasource():
     data = dm.load_matrix(force=True)
     names = {s["name"] for s in data["sources"]}
     assert "_capabilities" not in names
-    assert data["source_count"] == len(data["sources"]) == 5
+    # 2026-10-01 起是 6 个（新增 fuyao）。断言写成"与 sources 长度一致"
+    # 是为了防止"漏加一个源导致某列空白"的静默退化。
+    assert data["source_count"] == len(data["sources"])
+    assert data["source_count"] >= 6

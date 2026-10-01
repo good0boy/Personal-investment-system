@@ -31,6 +31,20 @@ export interface RateLimiterStats {
 }
 
 /** 熔断器状态。`open=true` 表示**当前正被熔断**，此期间一个请求都不会发出去。 */
+/** 熔断的**单个线路组**状态（2026-10-01 起熔断按线路分组） */
+export interface BreakerGroupStats {
+  /** 线路组 key：em_push2 / em_push2his / em_push2ex / ths / fuyao / sina … */
+  key: string
+  open: boolean
+  remaining_seconds: number
+  soft_strikes: number
+  soft_threshold: number
+  trip_count: number
+  last_trip_at: string | null
+  reason: string
+  [key: string]: unknown
+}
+
 export interface CircuitBreakerStats {
   name: string
   open: boolean
@@ -43,6 +57,13 @@ export interface CircuitBreakerStats {
   trip_count: number
   last_trip_at: string | null
   reason: string
+  /**
+   * 各线路组的明细。顶层字段是"最严重的组"的聚合值 ——
+   * 这样老代码读 `open` / `remaining_seconds` 依然可用。
+   */
+  groups?: BreakerGroupStats[]
+  /** 当前处于熔断状态的线路组 key 列表（空数组 = 没有熔断） */
+  open_groups?: string[]
   [key: string]: unknown
 }
 
@@ -263,7 +284,8 @@ export interface CatalogItem {
   name: string
   category: string
   sub_category: string
-  datasource: 'akshare' | 'baostock'
+  /** 数据源：akshare（含内置的同花顺 `*_ths`）/ baostock / fuyao（同花顺官方 REST） */
+  datasource: 'akshare' | 'baostock' | 'fuyao'
   func_name: string
   description: string
   symbol_format?: string | null

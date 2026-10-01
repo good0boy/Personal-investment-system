@@ -10,6 +10,7 @@ AKShare 各接口对代码格式要求**完全不统一**，实测共 5 种：
 | prefix          | `SZ000895`   | akshare `stock_zh_valuation_comparison_em`                 |
 | suffix          | `301389.SZ`  | akshare `stock_financial_analysis_indicator_em`            |
 | baostock        | `sh.600519`  | baostock 全部接口                                          |
+| thscode         | `600519.SH`  | 同花顺 fuyao REST（股票/指数）；板块指数另有 `886042.TI`      |
 | date / name     | `20230930`   | `stock_zh_a_gdhs`、`stock_fhps_em`（入参是报告期，不是代码）|
 
 **内部统一格式 = baostock 风格 `sh.600519`** —— 无歧义，且能表达沪深两市。
@@ -298,6 +299,72 @@ def to_suffixed(canonical: str) -> str:
     """`600519.SH` —— akshare `stock_financial_analysis_indicator_em` 使用。"""
     ex, code6 = _split(canonical)
     return f"{code6}{_SEP}{ex.upper()}"
+
+
+# ======================================================================
+# 同花顺 thscode（fuyao REST 专用）
+#
+# ⚠️ 与 baostock 的关键区别：**thscode 不是内部格式**（内部是 `sh.600519`）。
+#    所以这一组是"边界转换"，只应在 `fuyao_client` 与接它的调用点使用 ——
+#    不要把它当成又一个 `to_xxx` 到处用，否则内部会出现两种真相。
+#
+# ⚠️ 板块指数（同花顺行业/概念）不是股票也不是交易所指数，后缀是 `.TI`
+#    （TongHuaShun Index），且**只能是 6 位数字 + .TI**，没有 sh/sz 之分。
+# ======================================================================
+
+#: 股票/交易所指数的 thscode：`600519.SH` / `000001.SH` / `399001.SZ`
+_THSCODE_RE = re.compile(r"^(\d{6})\.(SH|SZ|BJ)$", re.IGNORECASE)
+
+#: 同花顺板块（行业/概念）指数的 thscode：`886042.TI` / `881121.TI`
+_TS_BOARD_RE = re.compile(r"^(\d{6})\.TI$", re.IGNORECASE)
+
+
+def to_thscode(canonical: str) -> str:
+    """内部格式 `sh.600519` → fuyao 的 thscode `600519.SH`。
+
+    指数同样适用：`sh.000001` → `000001.SH`、`sz.399001` → `399001.SZ`。
+    板块指数请用 `to_board_thscode()`（后缀是 `.TI`，与交易所无关）。
+    """
+    ex, code6 = _split(canonical)
+    return f"{code6}{_SEP}{ex.upper()}"
+
+
+def from_thscode(value: str) -> str:
+    """fuyao 的 thscode `600519.SH` → 内部格式 `sh.600519`。
+
+    ⚠️ 只接受股票/交易所指数形态（`.SH`/`.SZ`/`.BJ`）。
+       板块指数的 `.TI` 会被拒绝 —— 它没有交易所语义，硬转成
+       `xx.886042` 会造出一个根本不存在的内部代码，属静默污染的温床。
+       要处理板块请用 `is_board_thscode()` 判类型后单独走板块逻辑。
+    """
+    s = _clean(value)
+    m = _THSCODE_RE.match(s)
+    if not m:
+        raise SymbolFormatError(
+            f"不是合法的 thscode：{value!r}。"
+            f"股票/指数应为 600519.SH / 000001.SH / 399001.SZ"
+            f"（板块指数 886042.TI 不在此列，请用 is_board_thscode 判断）"
+        )
+    return f"{m.group(2).lower()}{_SEP}{m.group(1)}"
+
+
+def to_board_thscode(code: str) -> str:
+    """同花顺板块代码 `881121` → fuyao 的板块 thscode `881121.TI`。
+
+    入参是同花顺自己的板块码（akshare `stock_board_*_name_ths` 返回的 `code` 列），
+    **不是**内部股票格式，也不是交易所指数代码。
+    """
+    c = _clean(code)
+    if not _PLAIN_RE.match(c):
+        raise SymbolFormatError(
+            f"同花顺板块代码应为 6 位数字，收到：{code!r}"
+        )
+    return f"{c}.TI"
+
+
+def is_board_thscode(value: str) -> bool:
+    """是否为同花顺板块指数 thscode（`886042.TI` 形态）。"""
+    return bool(_TS_BOARD_RE.match(_clean(value)))
 
 
 def to_akshare(canonical: str, fmt: str = "plain") -> str:

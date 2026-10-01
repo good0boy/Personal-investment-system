@@ -1,0 +1,156 @@
+# ============================================================
+# 数据源能力声明 —— 同花顺 Fuyao（官方 REST API）
+# 模块 1「数据源能力矩阵」页面的数据来源。
+#
+# ★ 2026-10-01 新增。起因：东财 push2 / push2his 域名在本机被网络掐断，
+#   概念/行业板块、板块成分、全市场快照整块不可用 → 改用同花顺。
+#
+# ⚠️ 本文件里的每个字段都会被 `datasource_matrix._build_source()` 读取并
+#   渲染到页面上。**不要写不被读取的字段** —— 那正是本项目最忌讳的
+#   "配置写了但没被读"。密钥相关信息一律写进 `pitfalls` / `license`
+#   （这两项会渲染），不要新造 `auth:` 之类的键。
+# ============================================================
+
+name: "fuyao"
+display_name: "同花顺 Fuyao API"
+role: "特色数据源"
+package: "REST API（https://fuyao.aicubes.cn）"
+version_pin: ""
+homepage: "https://fuyao.aicubes.cn"
+license: "需 API Key（请求头 X-api-key）：网关在 .env 的 FUYAO_API_KEY，申请入口 https://fuyao.aicubes.cn/admin/"
+
+# ★ 实测标记：true = 本环境真实调用验证过
+verified: true
+verified_at: "2026-10-01"
+verified_by: "旺财（本机实测，Key 由主人在 .env 配置）"
+verified_note: "12 个端点在 2026-10-01 全部实测通过；历史交易日涨停池实测 20260929 正常返回"
+
+# 代码格式 —— 本项目唯一使用 thscode 的源
+symbol_format: "thscode（600519.SH / 指数 000001.SH / 板块 886042.TI）"
+symbol_note: >-
+  ★ 不接受纯 ticker（600519 会被拒）。板块指数后缀是 .TI，与交易所无关；
+  本地内部格式 sh.600519 与 thscode 的互转见
+  app/services/data_source/symbols.py 的 to_thscode / from_thscode / to_board_thscode
+
+capabilities:
+  # ---------- 行情 ----------
+  daily_kline:
+    supported: true
+    quality: "fair"
+    note: >-
+      /api/a-share/prices/historical，支持 backward/forward/none。
+      ⚠️ 每次仅一只、窗口 ≤ 10 年；且**无逐日 isST / 停牌字段** → 不能做回测主源
+    priority: "备选"
+  minute_kline:
+    supported: false
+    quality: "none"
+    note: "❌ interval 当前仅支持 1d"
+    priority: "-"
+  adjust_factor:
+    supported: true
+    quality: "fair"
+    note: "historical 接口直接给三种复权口径（不是给因子）"
+    priority: "备选"
+  realtime_quote:
+    supported: true
+    quality: "good"
+    note: >-
+      /api/a-share/prices/snapshot。thscodes 逗号分隔可批量；省略则全市场分页。
+      ⚠️ 返回不含中文名、列名为英文，与 akshare 口径不同
+    priority: "主用（东财 push2 失效后）"
+  index_daily:
+    supported: true
+    quality: "good"
+    note: "★ /api/a-share-index/prices/historical 同时支持交易所指数与同花顺板块指数（.TI）"
+    priority: "备选"
+
+  # ---------- 合规与风控（本项目红线所在）----------
+  daily_st_status:
+    supported: false
+    quality: "poor"
+    note: "❌ 仅涨停池里带 is_st 字段（覆盖涨停股，非全市场逐日）"
+    priority: "-"
+  halt_status:
+    supported: false
+    quality: "none"
+    note: "❌ 无停牌标记"
+    priority: "-"
+  delisted_history:
+    supported: false
+    quality: "none"
+    note: "❌ 未验证"
+    priority: "-"
+
+  # ---------- 股票池与日历 ----------
+  historical_index_cons:
+    supported: false
+    quality: "none"
+    note: "❌ ths-stock-list 是**当前**成分股，不接受日期参数"
+    priority: "-"
+  all_stock_list:
+    supported: true
+    quality: "good"
+    note: "/api/meta/tickers/list，含 exchange 与 list_date"
+    priority: "备选"
+  trade_calendar:
+    supported: false
+    quality: "none"
+    note: "❌ 无日历端点。日历唯一真相仍是 baostock（本客户端已把 fetch_trade_dates 委托过去）"
+    priority: "-"
+
+  # ---------- 基本面 ----------
+  fundamentals:
+    supported: false
+    quality: "none"
+    note: "❌ 本轮未接（同花顺财务接口在 akshare 的 *_ths 里，不在本 REST）"
+    priority: "-"
+  industry_classification:
+    supported: true
+    quality: "excellent"
+    note: "★ 同花顺行业/概念板块目录：行业 320 个 / 概念 390 个（比 akshare 的 *_ths 列表更全）"
+    priority: "主用"
+
+  # ---------- 板块与资金 ----------
+  sector_board:
+    supported: true
+    quality: "excellent"
+    note: >-
+      ★ 板块清单 / **成分股** / 快照 / 历史 K 线四件套。成分股是本源的**独占项**
+      （akshare 没有任何 *_ths 成分股接口）
+    priority: "主用"
+  limit_pool:
+    supported: true
+    quality: "excellent"
+    note: >-
+      ★★ 涨停/跌停/炸板股票池 + 连板天梯，**date_ms 可指定任意历史交易日** ——
+      这一条直接解决了"东财涨停池只保留最近 1~2 日"的老问题（开发进度 §5 Q1）
+    priority: "主用"
+  fund_flow:
+    supported: false
+    quality: "none"
+    note: "❌ 本轮未接"
+    priority: "-"
+  dragon_tiger:
+    supported: true
+    quality: "good"
+    note: "/api/a-share/special-data/dragon-tiger-list（全部/机构/游资）"
+    priority: "备选"
+
+# 稳定性评估
+stability:
+  interface_change_risk: "low"
+  note: >-
+    官方 REST，比网页爬虫稳定；有明确的错误码契约与 request_id。
+    ⚠️ 但**业务错误也返回 HTTP 200**，必须按信封 code 判断（0 = 成功）。
+
+# 已知坑
+pitfalls:
+  - "★ 业务错误照样返回 HTTP 200，靠信封 code 判断；resp.raise_for_status() 对业务错误无效"
+  - "★ 时间戳一律**毫秒级 Unix**（Asia/Shanghai 零点）；省略日期参数 = 取当前自然日"
+  - "非交易日（周末/节假日）的涨跌停池返回空表，属正常，不是接口坏了"
+  - "代码必须用 thscode（600519.SH），传纯 ticker 会被拒"
+  - "板块指数代码（886042.TI）与 akshare 的板块码（881121）**体系不通**，只能以板块中文名做桥"
+  - "分页 size 上限 200；涨停池一天可能超过一页（本项目试跑会自动翻页，最多 5 页）"
+  - "historical 窗口跨度 ≤ 10 年，且**每次只能查一只**标的"
+  - "市场 dump 的 S3 预签名链接约 5 分钟过期且不可缓存，不适合做成按请求取数的接口"
+  - "API Key 只走 X-api-key 请求头；绝不进日志参数，也绝不出现在任何 API 响应里"
