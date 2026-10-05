@@ -72,8 +72,8 @@ TRADE_COLUMNS: tuple[str, ...] = (
     "shares",          # 成交股数（整手）
     "entry_amount",    # 成交金额 = entry_price × shares（不含费用）
     "entry_cost",      # 买入费用（元）
-    "exit_date",       # 卖出成交日
-    "exit_price",      # 卖出成交价（后复权开盘价）
+    "exit_date",       # 卖出成交日（v1.6：正常清仓 = 信号日 T 当日；顺延/退市除外）
+    "exit_price",      # 卖出成交价（v1.6：正常清仓 = 信号日后复权**收盘价**；顺延卖出 = 开盘价）
     "exit_amount",     # 卖出成交金额
     "exit_cost",       # 卖出费用（元，含印花税）
     "cost",            # 总费用 = entry_cost + exit_cost
@@ -101,7 +101,7 @@ POSITION_COLUMNS: tuple[str, ...] = (
 #: 委托流水列（含被拒/顺延的，是排查撮合问题的唯一凭证）
 ORDER_COLUMNS: tuple[str, ...] = (
     "signal_date",     # 信号生成日（T）
-    "exec_date",       # 实际成交日（T+1 或顺延后的某日）
+    "exec_date",       # 实际成交日（买单 = T+1；卖单 = 信号日当日或顺延后的某日）
     "symbol",
     "side",            # buy | sell
     "shares",
@@ -115,7 +115,8 @@ ORDER_COLUMNS: tuple[str, ...] = (
 #: 卖出原因枚举（策略实现里只用这些字面量，便于前端着色与统计）
 EXIT_REASONS: tuple[str, ...] = (
     "time_stop",       # 持有满 N 个交易日
-    "take_profit",     # 扣成本后净浮盈达标
+    "take_profit",     # 毛收益率达到板块止盈阈值（v1.4 起为毛口径）
+    "stop_loss",       # 毛亏损达到板块止损倍数 × 近5日平均振幅（v1.4 新增）
     "market_panic",    # 上证指数当日收盘大跌
     "limit_down",      # 跌停
     "st",              # isST == 1
@@ -356,8 +357,9 @@ class BaseStrategy(ABC):
     """策略契约。
 
     ★ 一条铁律：**`on_bar()` 只允许"生成订单"，不允许直接成交**。
-      所有成交都发生在下一个交易日的开盘（方案 C），这是本项目
-      「无未来函数」的实现方式 —— 策略拿不到成交价，自然也没法偷看。
+      成交一律由引擎在 `on_bar` 之后撮合 —— 策略拿不到成交价，自然也没法偷看。
+      v1.6 起口径分两侧：**买单**在下一个交易日开盘成交；**卖单（清仓）**在
+      信号日**当日尾盘按收盘价**成交（收盘跌停/停牌则顺延到下一交易日开盘）。
     """
 
     #: 策略名（用于目录名 `data/backtest/{name}/`）

@@ -463,9 +463,11 @@ const tradeTab = ref('filled')
 const EXIT_REASON_LABEL: Record<string, string> = {
   time_stop: '时间止损',
   take_profit: '止盈',
+  stop_loss: '个股止损',
   market_panic: '大盘恐慌',
   limit_down: '跌停',
   st: 'ST',
+  delist: '退市强平',
 }
 
 const ORDER_STATUS_LABEL: Record<string, string> = {

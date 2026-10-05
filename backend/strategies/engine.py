@@ -38,6 +38,7 @@ from app.core.logging import logger
 from app.services import cost_model, data_store
 from app.services import metrics as metrics_mod
 from app.services.calendar_service import get_calendar
+from app.services.data_source.symbols import board_of_symbol
 from strategies.base import (
     EQUITY_COLUMNS,
     ORDER_COLUMNS,
@@ -49,6 +50,11 @@ from strategies.base import (
     ensure_contract,
 )
 from tools.universe import (
+    GEM_20PCT_FROM,
+    LIMIT_PCT_DEFAULT,
+    LIMIT_PCT_GEM_20,
+    LIMIT_PCT_ST,
+    LIMIT_RATIO_TOL,
     at_limit_down,
     at_limit_up,
     build_universe,
@@ -101,6 +107,57 @@ class MarketData:
     index_symbol: str = ""
     index_close: np.ndarray = field(default_factory=lambda: np.array([]))
     index_pct_chg: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    #: 「当日最高价触及涨停价」布尔矩阵 (n_days × n_symbols) —— 2026-10-05 新增
+    #: 为什么预计算：闸门 5 要回看近 N 日 × 全池 × 上千组参数，逐候选做 Python 循环
+    #: 会把寻优拖死；这里是 O(n_days×n_symbols) 的一次性向量化，之后每候选 O(1) 查表。
+    limit_up_touched: np.ndarray = field(
+        default_factory=lambda: np.zeros((0, 0), dtype=bool)
+    )
+    #: 上面那张矩阵沿日期轴的**前缀和**（int16，多一行便于区间求差）
+    limit_up_prefix: np.ndarray = field(
+        default_factory=lambda: np.zeros((0, 0), dtype=np.int16)
+    )
+
+    @staticmethod
+    def _build_limit_up_touched(
+        *,
+        dates: list[str],
+        symbols: list[str],
+        high: np.ndarray,
+        preclose: np.ndarray,
+        is_st: np.ndarray,
+        has_data: np.ndarray,
+    ) -> np.ndarray:
+        """预计算「当日最高价触及涨停价」布尔矩阵 (n_days × n_symbols)。
+
+        ★ 与 `tools.universe.price_limit_pct` **逐条对齐**（顺序：ST ±5% →
+          创业板且日期 ≥ 2020-08-24 ±20% → 默认 ±10%），触及判定用
+          `LIMIT_RATIO_TOL`（**比例容差**，与复权尺度无关）。
+        两者是"两份实现"，因此有专项一致性测试钉着（`tests/test_limit_up.py`）——
+        口径漂移在本项目属于最危险的静默失效。
+
+        `dates` 是 `YYYY-MM-DD` 字符串，可直接比较（省去逐日 Timestamp 构造）。
+        """
+        n_d, n_s = high.shape
+        is_gem = np.fromiter(
+            (board_of_symbol(s) == "gem" for s in symbols), dtype=bool, count=n_s
+        )
+        from_2020 = np.fromiter(
+            (d >= GEM_20PCT_FROM for d in dates), dtype=bool, count=n_d
+        )
+        gem_20 = from_2020[:, None] & is_gem[None, :]
+
+        limit = np.full((n_d, n_s), LIMIT_PCT_DEFAULT, dtype=np.float64)
+        limit[gem_20] = LIMIT_PCT_GEM_20
+        limit[is_st == 1] = LIMIT_PCT_ST          # is_st 缺失 = -1 → 非 ST，与标量实现一致
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = high / preclose
+            touched = np.isfinite(ratio) & (
+                np.abs(ratio - 1.0 - limit) <= LIMIT_RATIO_TOL
+            )
+        return touched & has_data
 
     @classmethod
     def load(
@@ -171,23 +228,41 @@ class MarketData:
             f"行情矩阵就绪：{n_d} 个交易日 × {n_s} 只标的"
             f"（{dates[0]} ~ {dates[-1]}），基准 {idx_sym or '无'}"
         )
+        high_m = _mat("high", np.float64, np.nan)
+        preclose_m = _mat("preclose", np.float64, np.nan)
+        is_st_m = _mat("is_st", np.int8, -1)
+
+        # 闸门 5 的底座：一次性向量化算「当日是否触及涨停」，再取日期轴前缀和
+        limit_up_touched = cls._build_limit_up_touched(
+            dates=dates,
+            symbols=all_syms,
+            high=high_m,
+            preclose=preclose_m,
+            is_st=is_st_m,
+            has_data=has_data,
+        )
+        limit_up_prefix = np.zeros((n_d + 1, n_s), dtype=np.int16)
+        np.cumsum(limit_up_touched, axis=0, dtype=np.int16, out=limit_up_prefix[1:])
+
         return cls(
             dates=dates,
             date_index=date_index,
             symbols=all_syms,
             symbol_index=symbol_index,
             open=_mat("open", np.float64, np.nan),
-            high=_mat("high", np.float64, np.nan),
+            high=high_m,
             low=_mat("low", np.float64, np.nan),
             close=_mat("close", np.float64, np.nan),
-            preclose=_mat("preclose", np.float64, np.nan),
+            preclose=preclose_m,
             pct_chg=_mat("pct_chg", np.float32, np.nan),
             trade_status=_mat("trade_status", np.int8, -1),
-            is_st=_mat("is_st", np.int8, -1),
+            is_st=is_st_m,
             has_data=has_data,
             index_symbol=idx_sym,
             index_close=idx_close,
             index_pct_chg=idx_pct,
+            limit_up_touched=limit_up_touched,
+            limit_up_prefix=limit_up_prefix,
         )
 
     # ------------------------------------------------------------------
@@ -264,6 +339,26 @@ class MarketData:
         if valid.size == 0:
             return float("nan")
         return float(valid.mean())
+
+    def recent_limit_up_touched(self, symbol: str, di: int, n: int) -> bool:
+        """近 n 个交易日（**含 di 当日**，即 `[di-n+1, di]`）是否出现涨停/触板。
+
+        - `n <= 0` → **恒 False**（闸门关闭）；这是"用 0 表示关闭"的约定。
+        - 触板 = 当日**最高价**触及涨停价（收盘涨停必然触板，故不必另判 close）。
+        - 走预计算的 `limit_up_prefix` 前缀和 → **O(1)**，不随窗口长度变化。
+        - 历史不足（`di-n+1 < 0`）时把下界截到 0（用可用历史）。
+          正常回测不会发生：预热 97 个交易日 > 网格里最长窗口 20。
+        """
+        if n <= 0:
+            return False
+        si = self.symbol_index.get(symbol)
+        if si is None or di < 0 or self.limit_up_prefix.size == 0:
+            return False
+        if di >= self.limit_up_prefix.shape[0] - 1:
+            return False
+        lo = max(0, di - n + 1)
+        count = int(self.limit_up_prefix[di + 1, si]) - int(self.limit_up_prefix[lo, si])
+        return count > 0
 
     def index_ret(self, di: int, n: int) -> float:
         """基准指数近 n 个交易日的累计涨跌幅（用于择时闸门）。"""
@@ -607,23 +702,34 @@ class BacktestEngine:
         idx = np.nonzero(np.isfinite(col))[0]
         return float(col[idx[-1]]) if idx.size else float("nan")
 
-    def _sellable(self, symbol: str, di: int) -> tuple[bool, str]:
-        """能否按 di 日开盘价卖出。返回 (可卖, 原因)。"""
+    def _sellable_core(self, symbol: str, di: int, px: float, phase: str) -> tuple[bool, str]:
+        """能否按 di 日的价格 `px` 卖出。返回 (可卖, 原因)。
+
+        `phase` 只用于消息措辞（"开盘" / "收盘"）。**开盘与收盘两条路径共用本实现**，
+        保证跌停判定只有一套口径 —— 这是本项目反复强调的"单一实现"纪律。
+        """
         if not self.market.has_data[di, self.market.symbol_index[symbol]]:
             return False, "该日无行情数据"
         if not self.market.is_tradable(symbol, di):
             return False, "停牌（trade_status=0）"
-        px = self.market.open_at(symbol, di)
         pre = self.market.preclose_at(symbol, di)
         if not np.isfinite(px) or not np.isfinite(pre) or pre <= 0:
-            return False, "开盘价/前收盘缺失"
+            return False, f"{phase}价/前收盘缺失"
         si = self.market.symbol_index[symbol]
         limit = price_limit_pct(symbol, self.market.dates[di], int(self.market.is_st[di, si]))
         # ★ 比例容差判定（universe.at_limit_down，复权安全）：
         #   真实跌停价取整发生在不复权价上，hfq 价格上比绝对元数会系统性漏判。
         if at_limit_down(px, pre, limit):
-            return False, f"开盘即跌停（≈{pre * (1 - limit):.2f}），无买盘"
+            return False, f"{phase}跌停（≈{pre * (1 - limit):.2f}），无买盘"
         return True, ""
+
+    def _sellable(self, symbol: str, di: int) -> tuple[bool, str]:
+        """能否按 di 日**开盘价**卖出（清仓信号顺延重试走这条）。"""
+        return self._sellable_core(symbol, di, self.market.open_at(symbol, di), "开盘")
+
+    def _sellable_at_close(self, symbol: str, di: int) -> tuple[bool, str]:
+        """能否按 di 日**收盘价**卖出（v1.6：T 日信号 → T 日尾盘收盘成交）。"""
+        return self._sellable_core(symbol, di, self.market.close_at(symbol, di), "收盘")
 
     def _buyable(self, symbol: str, di: int) -> tuple[bool, str]:
         """能否按 di 日开盘价买入。"""
@@ -642,7 +748,14 @@ class BacktestEngine:
         return True, ""
 
     def _execute_pending(self, di: int, day: str) -> None:
-        """在 di 日开盘执行挂单。无法成交的**顺延**，绝不按理想价撮合。"""
+        """在 di 日**开盘**执行挂单。无法成交的**顺延**，绝不按理想价撮合。
+
+        v1.6 起这里承接两类单子：
+        - **买单**：昨日收盘信号 → 今日开盘成交（买入口径未变）；
+        - **遗留的卖单**：昨日及更早挂出、但当日收盘跌停/停牌而没卖掉的，
+          顺延到今日开盘按开盘价再试（`_sellable` 开盘口径）。
+        当日新挂出的卖单不在此处成交 —— 它们由 `_execute_pending_at_close` 在收盘撮合。
+        """
         if not self.pending:
             return
         still_pending: list[Order] = []
@@ -657,7 +770,7 @@ class BacktestEngine:
                     still_pending.append(order)
                     self._record_order(order, day, None, None, "pending", why)
                     continue
-                self._fill_sell(order, di, day)
+                self._fill_sell(order, di, day, self.market.open_at(sym, di))
             else:
                 if sym in self.positions:          # 已持有 → 不再加仓
                     continue
@@ -670,9 +783,58 @@ class BacktestEngine:
                 self._fill_buy(order, di, day)
         self.pending = still_pending
 
-    def _fill_sell(self, order: Order, di: int, day: str) -> None:
+    def _execute_pending_at_close(self, di: int, day: str) -> bool:
+        """在 di 日**收盘**撮合当日（`signal_idx == di`）挂出的卖单（v1.6 新口径）。
+
+        规则依据：规格 v1.6 §2.3 —— 清仓信号在 T 日尾盘按**收盘价**成交。
+        返回是否发生了成交（供净值快照判断是否需要重算，目前调用方总是重算）。
+
+        三条不成交的路径，都**留在 pending**、交下一交易日的 `_execute_pending`
+        按**开盘价**重试（这是本口径下唯一的例外）：
+        1. **T+1 制度守卫**：`pos.entry_idx >= di`（当日买入）→ 当日不得卖出；
+        2. **收盘跌停 / 停牌 / 无数据** → 物理上卖不掉，绝不按理想价撮合；
+        3. 该持仓已因别的原因平掉 → 直接丢弃（与 `_execute_pending` 同处理）。
+        """
+        if not self.pending:
+            return False
+        still_pending: list[Order] = []
+        filled_any = False
+        for order in self.pending:
+            # 买单、以及"非今日挂出"的遗留卖单 → 不归这里，留给开盘路径
+            if order.side != "sell" or order.signal_idx != di:
+                still_pending.append(order)
+                continue
+            sym = order.symbol
+            if sym not in self.positions:          # 已因别的原因平掉
+                continue
+            pos = self.positions[sym]
+            if pos.entry_idx >= di:                # ★ A 股 T+1：当日买入当日不得卖
+                order.retries += 1
+                still_pending.append(order)
+                self._record_order(order, day, None, None, "pending", "T+1：次日开盘可卖")
+                continue
+            ok, why = self._sellable_at_close(sym, di)
+            if not ok:
+                order.retries += 1
+                still_pending.append(order)
+                self._record_order(order, day, None, None, "pending", why)
+                continue
+            self._fill_sell(order, di, day, self.market.close_at(sym, di))
+            filled_any = True
+        self.pending = still_pending
+        return filled_any
+
+    def _fill_sell(self, order: Order, di: int, day: str, price: float) -> None:
+        """卖出成交。`price` 由调用方给定：收盘路径 = 收盘价，顺延路径 = 开盘价。
+
+        ⚠️ `assert` 是**兜底**：A 股 T+1，当日买入的持仓当日绝不能卖出。
+           正常路径上 `_execute_pending_at_close` 已经拦过（且开盘路径天然满足），
+           这里再钉一道，防止将来被绕过。
+        """
         pos = self.positions[order.symbol]
-        price = self.market.open_at(order.symbol, di)
+        assert pos.entry_idx < di, (
+            f"T+1 违规：{order.symbol} entry_idx={pos.entry_idx} 拟于 di={di} 卖出"
+        )
         self._settle_sell(pos, price, di, day, order.reason, order=order)
 
     def _settle_sell(
@@ -688,7 +850,9 @@ class BacktestEngine:
         """卖出结算（正常卖出与退市强平共用的唯一记账出口）。
 
         Args:
-            price: 成交价。正常卖出 = 当日开盘价；退市强平 = 最后可用收盘价。
+            price: 成交价。正常清仓（v1.6）= **信号日后复权收盘价**；
+                   清仓顺延（当日跌停/停牌）= 顺延当日**开盘价**；
+                   退市强平 = 最后可用收盘价。
             order: 正常卖出传入（orders 流水走 `_record_order`）；
                    退市强平没有挂单过程，传 None（流水在调用方补记）。
         """
@@ -869,13 +1033,13 @@ class BacktestEngine:
             # 0) 退市/数据终止的持仓强平（技术架构 §6.3 要点 #10）
             self._force_liquidate_delisted(di, day)
 
-            # 1) 执行上一交易日挂出的订单（今日开盘）
+            # 1) 今日开盘：执行昨日挂出的买单 + 遗留的顺延卖单
             self._execute_pending(di, day)
 
-            # 2) 记录持仓快照与净值（今日收盘 mark-to-market）
-            self._mark_and_snapshot(di, day)
+            # 2) 用今日收盘价标出总资产（只标记、**不写快照**）—— `_buy_side` 靠它定仓位
+            self._set_total_asset(di)
 
-            # 3) 策略决策 → 挂单到下一交易日
+            # 3) 策略决策（T 日收盘后）→ 挂单入 pending
             ctx = StrategyContext(
                 day=day,
                 total_asset=self.total_asset,
@@ -890,7 +1054,13 @@ class BacktestEngine:
                 self.strategy.setup(ctx)
             self.strategy.on_bar(ctx)
 
-            # 4) 最后一天挂出的单子没有下一个交易日可执行 → 丢弃并记录
+            # 4) ★ v1.6：T 日收盘撮合清仓单（按收盘价成交；跌停/停牌/当日买入 → 顺延）
+            self._execute_pending_at_close(di, day)
+
+            # 5) 记录持仓快照与净值（今日收盘）—— 此时 cash/positions 已含收盘卖出的结果
+            self._mark_and_snapshot(di, day)
+
+            # 6) 最后一天挂出的单子没有下一个交易日可执行 → 丢弃并记录
             if day == self.days[-1] and self.pending:
                 for o in self.pending:
                     self._record_order(o, day, None, None, "rejected", "回测结束，未及成交")
@@ -927,7 +1097,22 @@ class BacktestEngine:
         return result
 
     # ------------------------------------------------------------------
+    def _set_total_asset(self, di: int) -> None:
+        """用 di 日收盘价标出总资产（**只标记、不写快照**）。
+
+        v1.6 从 `_mark_and_snapshot` 里抽出来：`on_bar` 需要先知道总资产才能定仓位
+        （`_buy_side` 用 `max_weight_per_stock × ctx.total_asset`），而收盘卖单又必须
+        在 `on_bar` 之后才撮合 —— 于是把"标记"与"写快照"拆成两步。
+        """
+        shares = {s: p.shares for s, p in self.positions.items()}
+        self.total_asset = self.cash + self._mark_to_market(di, shares)
+
     def _mark_and_snapshot(self, di: int, day: str) -> None:
+        """写当日持仓快照与净值。
+
+        v1.6 起在**收盘卖单撮合之后**调用，因此当日 equity 已含卖出费用、
+        `positions` 也不残留已卖出的持仓。
+        """
         shares = {s: p.shares for s, p in self.positions.items()}
         mv = self._mark_to_market(di, shares)
         self.total_asset = self.cash + mv

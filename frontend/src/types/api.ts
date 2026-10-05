@@ -662,8 +662,13 @@ export interface SweepDetail {
   strategy: string
   description: string
   objective: string
-  /** 参数名 → 候选值列表 */
-  params_grid: Record<string, Array<string | number>>
+  /**
+   * 参数名 → 候选值列表。
+   * ⚠️ 含**联合维度**：某个 key 的候选值可能是 dict 数组（如 `take_profit`
+   * → `[{take_profit_gross_main, take_profit_gross_gem}, …]`），
+   * 展开后的参数名出现在 `param_names` 与结果列里，但**不在**这里。
+   */
+  params_grid: Record<string, Array<string | number | Record<string, string | number>>>
   param_names: string[]
   /** 敏感性分析的轴：x = 横轴参数，series = 分组参数 */
   sensitivity_axes: { x?: string; series?: string | null }

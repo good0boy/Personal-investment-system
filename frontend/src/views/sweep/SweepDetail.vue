@@ -310,6 +310,38 @@ const seriesAxis = computed(() => {
   return names.find((n) => n !== xAxis.value) ?? ''
 })
 
+/**
+ * 某个轴上的候选取值。
+ *
+ * ★ 优先取 `params_grid`；但**联合维度**展开后的参数名（如
+ *   `take_profit_gross_main`）不在网格定义里（网格里的 key 是 `take_profit`，
+ *   值是 dict 数组）→ 必须回退到"从结果行里去重取值"。
+ *   否则 `params_grid[key]` 为 undefined → 热力图/折线**静默空白**
+ *   （正是本项目最恨的"算了却没呈现"）。
+ */
+function axisValues(key: string): Array<string | number> {
+  const d = detail.value
+  if (!d || !key) return []
+  const fromGrid = d.params_grid?.[key]
+  if (Array.isArray(fromGrid) && fromGrid.length && fromGrid.every((v) => typeof v !== 'object')) {
+    return fromGrid as Array<string | number>
+  }
+  const seen = new Set<string>()
+  const out: Array<string | number> = []
+  for (const it of items.value) {
+    const v: unknown = it[key]
+    if (typeof v !== 'string' && typeof v !== 'number') continue
+    const s = String(v)
+    if (seen.has(s)) continue
+    seen.add(s)
+    out.push(v)
+  }
+  out.sort((a, b) =>
+    typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b)),
+  )
+  return out
+}
+
 const OBJECTIVE_LABEL: Record<string, string> = {
   annual_return: '年化收益',
   total_return: '总收益',
@@ -385,7 +417,7 @@ function isPlateau(row: unknown): boolean {
   return r.combo_index === p.combo_index
 }
 
-/** 参数名 → `hold_days_max=20 take_profit_net=0.1`（读法比 JSON 自然） */
+/** 参数名 → `hold_days_max=20  take_profit_gross_main=0.06`（读法比 JSON 自然） */
 function fmtParams(row: unknown): string {
   const r = asRow(row)
   if (!r) return DASH
@@ -443,8 +475,8 @@ function rowClass({ row }: { row: unknown }): string {
 const heatOption = computed<EChartsOption>(() => {
   const d = detail.value
   if (!d || !items.value.length) return {}
-  const xs = d.params_grid[xAxis.value] ?? []
-  const srs = seriesAxis.value ? (d.params_grid[seriesAxis.value] ?? []) : []
+  const xs = axisValues(xAxis.value)
+  const srs = seriesAxis.value ? axisValues(seriesAxis.value) : []
   if (!xs.length) return {}
 
   const xIdx = new Map(xs.map((v, i) => [String(v), i]))
@@ -563,8 +595,8 @@ const heatOption = computed<EChartsOption>(() => {
 const lineOption = computed<EChartsOption>(() => {
   const d = detail.value
   if (!d || !seriesAxis.value) return {}
-  const xs = d.params_grid[xAxis.value] ?? []
-  const srs = d.params_grid[seriesAxis.value] ?? []
+  const xs = axisValues(xAxis.value)
+  const srs = axisValues(seriesAxis.value)
   if (!xs.length || !srs.length) return {}
 
   const colorOf = (i: number) =>

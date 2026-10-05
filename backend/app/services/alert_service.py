@@ -108,6 +108,7 @@ ACTION_CN: dict[str, str] = {
 EXIT_REASON_CN: dict[str, str] = {
     "time_stop": "持有期满",
     "take_profit": "止盈",
+    "stop_loss": "个股止损",
     "market_panic": "大盘恐慌",
     "limit_down": "跌停",
     "st": "ST 风险",

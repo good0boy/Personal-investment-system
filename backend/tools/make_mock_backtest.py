@@ -72,7 +72,7 @@ SYMBOLS = [
     "sh.600036", "sz.002594", "sh.601899", "sz.000333", "sh.600276",
 ]
 #: 卖出原因：故意混入多值（`time_stop|take_profit`）以验证前端的多值解析
-EXIT_REASONS = ["time_stop", "take_profit", "time_stop|take_profit", "market_panic"]
+EXIT_REASONS = ["time_stop", "take_profit", "stop_loss", "time_stop|take_profit", "market_panic"]
 
 INITIAL_CASH = 1_000_000.0
 
@@ -353,7 +353,8 @@ def _config(
             "benchmark": "sh.000001",
             "params": {
                 "hold_days_max": 10,
-                "take_profit_net": 0.10,
+                "take_profit_gross_main": 0.06,
+                "take_profit_gross_gem": 0.10,
                 "index_panic_pct": -0.015,
                 "max_positions": 5,
             },

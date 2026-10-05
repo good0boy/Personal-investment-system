@@ -1,0 +1,51 @@
+# ============================================================
+# 参数寻优网格（v1.4 规则集 · 参数重建）：72 组
+#   止盈档(成对) × 持有期 × 单票仓位 × 最大持仓数
+# ============================================================
+# 依据：策略规格说明书.md §7.4（v1.4 变更记录）。
+#
+# ⚠️ **为什么是"重建"**：v1.4 的策略代码**从未提交、已永久丢失**（工作区被 v1.5 覆盖）。
+#    但 v1.4 与 v1.5 的差异恰好只有三处，且**全部已参数化** —— 所以下面用
+#    "固定参数"把 v1.5 代码调回 v1.4 语义：
+#      · no_limit_up_days     = 0     （v1.4 还没有闸门 5 → 关闭）
+#      · stop_loss_amp_mult_* = 2.0 / 3.0  （v1.4 是板块化 2×/3×；v1.5 才收紧到 1.2）
+#      · take_profit_gross_*  = 成对扫描（v1.4 是板块化 6%/10%）
+#    v1.4 与 v1.5 的闸门 1 / 闸门 3 / 闸门 4 / 闸门 3.5 停用 完全一致，无需参数干预。
+#
+# ⚠️ 成交口径：本轮跑在 **v1.6 引擎**上 —— 清仓为「T 日尾盘按收盘价成交」
+#    （v1.4 当年跑的是 T+1 开盘卖出）。故与磁盘上的 v1.4 旧产物**不可直接比数字**。
+#
+# 用法：
+#   cd backend
+#   python -m strategies.sweep --config sweeps/hold_tp_v14.yaml --tag v1.4-recon --sweep-id v1.4-recon-sweep
+#
+# ⚠️ 参数寻优只允许跑**样本内**区间（代码里硬编码拒绝，见 strategies/sweep.py 的 assert_in_sample）。
+#
+# 网格 = 4 × 3 × 3 × 2 = **72 组**；按 25~35s/组估 → 约 30~45 分钟。
+# ============================================================
+
+strategy: momentum
+description: v1.4 规则集（止盈成对） × 持有期 × 单票仓位 × 最大持仓数
+
+params:
+  hold_days_max: [10, 20, 40]                  # 3 档：最大持有期
+  take_profit:                                  # 联合维度：主板/创业板**成对**（v1.4 是 6%/10% 两套）
+    - { take_profit_gross_main: 0.04, take_profit_gross_gem: 0.08 }
+    - { take_profit_gross_main: 0.06, take_profit_gross_gem: 0.10 }
+    - { take_profit_gross_main: 0.09, take_profit_gross_gem: 0.12 }
+    - { take_profit_gross_main: 0.12, take_profit_gross_gem: 0.15 }
+  max_weight_per_stock: [0.20, 0.25, 0.50]      # 3 档：单票仓位
+  max_positions: [5, 2]                         # 2 档：最大持仓数
+
+  # ---- 以下三项把 v1.5 代码"调回" v1.4 语义（固定单值，不参与扫描）----
+  no_limit_up_days: [0]                         # v1.4 无闸门 5
+  stop_loss_amp_mult_main: [2.0]                # v1.4 主板止损 2×
+  stop_loss_amp_mult_gem: [3.0]                 # v1.4 创业板止损 3×
+
+# 敏感性分析：横轴取止盈档（主板），分组轴取持有期。两轴都必须是**展开后的**参数名。
+sensitivity:
+  x: take_profit_gross_main
+  series: hold_days_max
+
+# 主指标：用于挑最优组合与计算敏感性落差
+objective: annual_return

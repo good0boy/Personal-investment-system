@@ -154,18 +154,45 @@ class CostConfig(BaseModel):
 
 
 class TimingConfig(BaseModel):
+    """闸门 1 · 大盘择时（v1.4 起为**逐日**口径）。
+
+    v1.4 变更：旧版 `ret3_min`（近3日**累计**下限）已被 `daily_min` 取代 ——
+    现在要求近 3 个交易日（T、T-1、T-2）**逐日**涨跌幅**均** > `daily_min`。
+    """
+
     index_code: str = "sh.000001"
-    ret3_min: float = -0.01
-    today_min: float = -0.005
+    daily_min: float = -0.01      # 近3个交易日逐日涨跌幅均须 > 此值
+    today_min: float = -0.005     # 当日涨跌幅下限
+
+
+class BoardEntryConfig(BaseModel):
+    """闸门 3 里**按板块**差异化的一档阈值（主板 main / 创业板 gem）。"""
+
+    today_pct_max: float          # 当日涨跌幅上限（开区间，不含）
+    ret10_min: float              # 近10日累计涨跌幅下限
+    ret10_max: float              # 近10日累计涨跌幅上限
 
 
 class EntryConfig(BaseModel):
-    today_pct_min: float = 0.01
-    today_pct_max: float = 0.05
-    ret3_min: float = 0.05
-    ret10_min: float = 0.05
-    ret20_min: float = 0.05
-    amplitude_window: int = 5
+    """闸门 3（个股筛选）+ 闸门 4（量比）+ 闸门 5（近期无涨停）的参数。
+
+    v1.4 变更：闸门 3 的今日上限、近10日区间改为**板块化**（`boards.main` / `boards.gem`）；
+    新增闸门 4 的量比阈值 `volume_ratio_min`；`ret3_min` / `ret20_min` 作为**通用**条件保留。
+    v1.5 变更：新增闸门 5 —— `no_limit_up_days`（近 N 个交易日，**含当日**，不得涨停/触板；0 = 关闭）。
+    """
+
+    today_pct_min: float = 0.01                 # 今日涨跌幅下限（通用）
+    ret3_min: float = 0.05                      # 近3日累计 > 此值（通用，保留）
+    ret20_min: float = 0.05                     # 近20日累计 > 此值（通用，保留）
+    amplitude_window: int = 5                   # 排序键：近 N 日平均振幅
+    volume_ratio_min: float = 1.5               # 闸门 4：量比 1 日与 5 日均须 > 此值
+    no_limit_up_days: int = 10                  # 闸门 5：近 N 日（含当日）不得涨停/触板；0 = 关闭
+    boards: dict[str, BoardEntryConfig] = Field(
+        default_factory=lambda: {
+            "main": BoardEntryConfig(today_pct_max=0.06, ret10_min=0.03, ret10_max=0.15),
+            "gem": BoardEntryConfig(today_pct_max=0.11, ret10_min=0.05, ret10_max=0.20),
+        }
+    )
 
 
 class StrategyDefaults(BaseModel):
@@ -174,13 +201,22 @@ class StrategyDefaults(BaseModel):
     max_weight_per_stock: float = 0.20
     keep_cash: bool = True
     hold_days_max: int = 10
-    take_profit_net: float = 0.10
+    # --- v1.4 起止盈为**毛口径**；v1.5 起主板/创业板**取同值 6%** ---
+    take_profit_gross_main: float = 0.06
+    take_profit_gross_gem: float = 0.06
     index_panic_pct: float = -0.015
-    use_stop_loss: bool = False
+    # --- v1.4 新增个股止损；v1.5 收紧到 1.2× 且**两板块同值** ---
+    use_stop_loss: bool = True
+    stop_loss_amp_window: int = 5
+    stop_loss_amp_mult_main: float = 1.2
+    stop_loss_amp_mult_gem: float = 1.2
     timing: TimingConfig = Field(default_factory=TimingConfig)
     entry: EntryConfig = Field(default_factory=EntryConfig)
     benchmark: str = "sh.000001"
-    fill_rule: str = "next_open"
+    # ⚠️ 原 `fill_rule` 字段已删除（v1.6）：它**从未被引擎读取**，是死配置。
+    #    成交时点现由引擎硬编码：买入 = T+1 开盘；清仓卖出 = T 日尾盘收盘价
+    #    （跌停/停牌顺延 T+1 开盘）。口径会写进 config_snapshot，
+    #    见 策略规格说明书.md v1.6 §2.1 / §7.6。
 
 
 class AkshareThrottleConfig(BaseModel):

@@ -228,16 +228,25 @@ def test_missing_value_keeps_symbol_not_excludes_it(tmp_path, monkeypatch):
     assert A_SYM in touched
 
 
-def test_config_snapshot_records_v13_contract(tmp_path, monkeypatch):
+def test_config_snapshot_records_v16_contract(tmp_path, monkeypatch):
     """config.json 快照必须能回答"当时跑的是哪套规则"。"""
     _install(tmp_path, monkeypatch)
 
     default = MomentumStrategy(None)
-    assert default.params["exclude_top_pct"] == 0.0, "代码默认必须是 0（v1.2 兼容）"
+    assert default.params["exclude_top_pct"] == 0.0, "代码默认必须是 0（v1.4 起停用闸门 3.5）"
     snap = default.config_snapshot()
-    assert "v1.3" in snap["rules_version"]
+    assert "v1.6" in snap["rules_version"]
     assert snap["exclude_factor"] == "momentum_20"
     assert snap["params"]["exclude_top_pct"] == 0.0
+    # v1.5 关键口径摘要：止盈/止损**两板块同值**，且新增闸门 5
+    assert snap["take_profit_gross"] == {"main": 0.06, "gem": 0.06}
+    assert snap["stop_loss"]["mult_main"] == 1.2
+    assert snap["stop_loss"]["mult_gem"] == 1.2
+    assert snap["no_limit_up_days"] == 10
+    assert snap["volume_ratio_min"] == 1.5
+    # ★ v1.6：成交时点口径必须写进快照 —— 否则新旧口径的产物无法区分
+    assert snap["buy_fill_rule"] == "next_open"
+    assert snap["sell_fill_rule"] == "same_close"
 
     explicit = MomentumStrategy({"exclude_top_pct": 0.2})
-    assert explicit.params["exclude_top_pct"] == 0.2, "显式参数必须透传（v1.3 回测靠它）"
+    assert explicit.params["exclude_top_pct"] == 0.2, "显式参数必须透传（对照回测靠它）"

@@ -55,7 +55,7 @@ def _config(
             "name": STRATEGY,
             "version": "1.2",
             "benchmark": "sh.000001",
-            "params": {"hold_days_max": 10, "take_profit_net": 0.10},
+            "params": {"hold_days_max": 10, "take_profit_gross_main": 0.10},
         },
         "interval": {
             "name": "in_sample",

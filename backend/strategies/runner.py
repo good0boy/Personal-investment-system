@@ -37,8 +37,13 @@ from strategies.engine import BacktestEngine, MarketData
 #: 预热起点：回测起点前需要 ≥20 个交易日预热，取 5 个月（实测 97 个交易日）
 PREHEAT_START = "2020-01-01"
 
-#: 网格组数上限 —— 防止手滑把 4×4 写成 40×40（一次几小时）
-MAX_GRID_COMBOS = 256
+#: 网格组数上限 —— 防止手滑把 4×4 写成 40×40（一次几小时）。
+#: v1.5 由 256 提到 2048：主网格（止盈4 × 止损4 × 窗口4 × 持有期3 × 仓位3 × 持仓数2）
+#: 已是 1152 组。仍保留硬上限 + `WARN_GRID_COMBOS` 的耗时提醒，护栏不至于形同虚设。
+MAX_GRID_COMBOS = 2048
+
+#: 超过这个组数就提醒预计耗时（按实测 ≈17.6s/组 估算）
+WARN_GRID_COMBOS = 512
 
 
 def build_config(
@@ -57,6 +62,7 @@ def build_config(
         破坏"哈希相同 = 配置相同"的语义。**别往里塞时间**。
     """
     strategy = registry.get_strategy(strategy_name, params)
+    sp = strategy.params
     config: dict[str, Any] = {
         "strategy": {
             **strategy.config_snapshot(),
@@ -67,8 +73,13 @@ def build_config(
         "interval": interval,
         "capital": {
             "initial_cash": settings.strategy.init_cash,
-            "max_positions": settings.strategy.max_positions,
-            "max_weight_per_stock": settings.strategy.max_weight_per_stock,
+            # ★ 取**策略实际参数**而不是 settings：参数寻优会覆盖 max_positions /
+            #   max_weight_per_stock，若这里写 settings 的固定值，config.json 就会
+            #   记成"跑了 20%/5 只"而实际跑的是别的 —— 又是"写了没被读"那类坑。
+            "max_positions": sp.get("max_positions", settings.strategy.max_positions),
+            "max_weight_per_stock": sp.get(
+                "max_weight_per_stock", settings.strategy.max_weight_per_stock
+            ),
         },
         "universe": settings.universe.model_dump(),
         "cost": settings.cost.model_dump(),
@@ -189,8 +200,10 @@ def run_backtest(
             end=end,
             preheat_start=PREHEAT_START,
             initial_cash=settings.strategy.init_cash,
-            max_positions=settings.strategy.max_positions,
-            max_weight_per_stock=settings.strategy.max_weight_per_stock,
+            max_positions=int(strategy.params.get("max_positions", settings.strategy.max_positions)),
+            max_weight_per_stock=float(
+                strategy.params.get("max_weight_per_stock", settings.strategy.max_weight_per_stock)
+            ),
             symbols=symbols,
             benchmark=settings.strategy.benchmark,
             listed_days_min=settings.universe.listed_days_min,
@@ -257,23 +270,95 @@ def run_backtest(
     }
 
 
+def _normalize_grid(
+    grid: dict[str, list[Any]],
+) -> tuple[list[str], list[list[dict[str, Any]]]]:
+    """把网格每个 key 的候选值统一成"参数 dict 列表"。
+
+    - 标量候选 `v` → `{key: v}`
+    - **联合维度**（v1.4 新增）：候选值为 dict → 直接展开成多个参数键，
+      用于表达"两个参数成对联动"（如止盈分主板/创业板两套、按档位配对）。
+
+    校验（宁可早报错，也别静默少跑/互相覆盖）：
+      - 同一 key 的候选**不得混用**标量与 dict；
+      - 联合 dict 里的键**不得与其它维度重复**（否则 `dict.update` 会静默覆盖）。
+    """
+    keys = sorted(grid)  # 排序让组序稳定、可复现
+    per_key: list[list[dict[str, Any]]] = []
+    seen: set[str] = set()
+    for k in keys:
+        vals = list(grid[k])
+        if not vals:
+            raise AppError(f"参数 {k} 的候选值为空")
+        has_dict = any(isinstance(v, dict) for v in vals)
+        has_scalar = any(not isinstance(v, dict) for v in vals)
+        if has_dict and has_scalar:
+            raise AppError(f"参数 {k} 的候选值不得混用标量与联合(dict)：{vals!r}")
+        if has_dict:
+            key_sets: list[frozenset[str]] = []
+            for d in vals:
+                dd = dict(d)
+                if not dd:
+                    raise AppError(f"参数 {k} 的联合候选不能是空 dict")
+                key_sets.append(frozenset(dd))
+            # 同一联合维度的各候选必须"键集一致"，否则是残缺的交叉，容易误解
+            if len(set(key_sets)) != 1:
+                raise AppError(
+                    f"参数 {k} 的联合候选键集不一致：{sorted(vals, key=str)}"
+                )
+            dim_keys = set(key_sets[0])
+            # 只与**其它维度**比重复（同一维度内相邻候选本来就用同一批键）
+            dup = sorted(dim_keys & seen)
+            if dup:
+                raise AppError(f"联合维度 {k} 的参数键与其它维度重复：{dup}")
+            seen.update(dim_keys)
+            per_key.append([dict(d) for d in vals])
+        else:
+            if k in seen:
+                raise AppError(f"参数键重复：{k}")
+            seen.add(k)
+            per_key.append([{k: v} for v in vals])
+    return keys, per_key
+
+
+def grid_param_names(grid: dict[str, list[Any]]) -> list[str]:
+    """网格展开后的**真实参数名**（联合维度展开成多个键）。
+
+    注意：与 `sorted(grid)` 不同 —— 网格里可能只有一个“联合维度” key
+    （如 `take_profit`），展开后却是 `take_profit_gross_main/_gem` 两个参数。
+    """
+    _, per_key = _normalize_grid(grid)
+    names: set[str] = set()
+    for choices in per_key:
+        for d in choices:
+            names.update(d)
+    return sorted(names)
+
+
 def expand_grid(grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
-    """参数网格 → 笛卡尔积列表。
+    """参数网格 → 组合列表（笛卡尔积，支持联合维度）。
 
     用 `itertools.product` 而不是手写嵌套循环：手写版本漏一层参数不会报错，
     只会静默少跑好几组（而"少跑"在结果里完全看不出来）。
     """
     if not grid:
         raise AppError("参数网格为空")
-    keys = sorted(grid)  # 排序让组序稳定、可复现
-    values = [list(grid[k]) for k in keys]
-    for k, v in zip(keys, values, strict=True):
-        if not v:
-            raise AppError(f"参数 {k} 的候选值为空")
-    combos = [dict(zip(keys, combo, strict=True)) for combo in product(*values)]
+    _, per_key = _normalize_grid(grid)
+    combos: list[dict[str, Any]] = []
+    for picks in product(*per_key):
+        merged: dict[str, Any] = {}
+        for d in picks:
+            merged.update(d)
+        combos.append(merged)
     if len(combos) > MAX_GRID_COMBOS:
         raise AppError(
             f"网格共 {len(combos)} 组，超过上限 {MAX_GRID_COMBOS}。"
             f"参数寻优是计算密集任务（每组 ≈ 一次完整回测），请缩小网格。"
+        )
+    if len(combos) > WARN_GRID_COMBOS:
+        # 上限放宽到 2048 后，这里补一条耗时提醒 —— 否则护栏形同虚设
+        logger.warning(
+            f"网格共 {len(combos)} 组：按实测 ≈17.6s/组（全市场）估算，"
+            f"预计耗时约 {len(combos) * 17.6 / 3600:.1f} 小时。建议后台跑。"
         )
     return combos

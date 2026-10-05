@@ -17,7 +17,7 @@
     python -m strategies.run --tag baseline
     python -m strategies.run --start 2020-06-01 --end 2024-12-31
     python -m strategies.run --out-sample                     # 样本外（谨慎：只跑一次）
-    python -m strategies.run --param hold_days_max=20 --param take_profit_net=0.15
+    python -m strategies.run --param hold_days_max=20 --param take_profit_gross_main=0.09
     python -m strategies.run --list                           # 看有哪些策略
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ def _parse_params(pairs: list[str] | None) -> dict[str, Any]:
     """`--param k=v` → dict，并按字面量推断类型。
 
     ⚠️ 一定要做类型转换：`--param hold_days_max=20` 若传成字符串 "20"，
-       与 int 比较时 Python 会 TypeError；而 `take_profit_net=0.15` 传成字符串
+       与 int 比较时 Python 会 TypeError；而 `take_profit_gross_main=0.09` 传成字符串
        则会**静默变成字符串比较**，止盈判定永远不触发。两种都很难查。
     """
     out: dict[str, Any] = {}

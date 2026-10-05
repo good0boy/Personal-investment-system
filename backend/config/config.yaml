@@ -60,29 +60,41 @@ cost:
     - { from_date: "2023-08-28", to_date: "2099-12-31", rate: 0.0005 }
   lot_size: 100                 # 整手 100 股
 
-# ---------------- 策略默认参数（详见 策略规格说明书.md v1.1）----------------
+# ---------------- 策略默认参数（详见 策略规格说明书.md v1.5）----------------
 strategy_defaults:
   init_cash: 1000000
-  max_positions: 5
-  max_weight_per_stock: 0.20    # 按当前总资产
-  keep_cash: true               # 不足 5 只时留现金
-  hold_days_max: 10             # 满 10 个交易日强制卖出
-  take_profit_net: 0.10         # 扣成本后净浮盈 > 10% 止盈
+  max_positions: 5              # 寻优候选 5 / 2（与 50% 仓位配合）
+  max_weight_per_stock: 0.20    # 按当前总资产；寻优候选 20% / 25% / 50%
+  keep_cash: true               # 不足时留现金
+  hold_days_max: 10             # 满 N 个交易日强制卖出；寻优候选 10 / 20 / 40
+  # 止盈：毛口径（不扣成本）；v1.5 起主板/创业板同值 6%；寻优候选 4%/6%/8%/10%
+  take_profit_gross_main: 0.06
+  take_profit_gross_gem: 0.06
   index_panic_pct: -0.015       # 上证指数当日收盘跌幅阈值
-  use_stop_loss: false          # 已确认不加个股止损
+  # 个股止损：v1.4 新增、v1.5 收紧到 1.2× 且两板块同值（见规格 2.3 条件 6）
+  use_stop_loss: true
+  stop_loss_amp_window: 5       # 近 5 个交易日平均振幅
+  stop_loss_amp_mult_main: 1.2  # 主板：毛亏 ≥ 1.2× 均振幅
+  stop_loss_amp_mult_gem: 1.2   # 创业板：同值（不再区分）
   timing:
     index_code: "sh.000001"
-    ret3_min: -0.01             # 近 3 日累计 > -1%
+    daily_min: -0.01            # 近3个交易日【逐日】涨跌幅均 > -1%
     today_min: -0.005           # 当日 > -0.5%
   entry:
-    today_pct_min: 0.01         # 今日涨跌幅 ∈ (1%, 5%)
-    today_pct_max: 0.05
-    ret3_min: 0.05              # 近 3 日累计 > 5%
-    ret10_min: 0.05
-    ret20_min: 0.05
+    today_pct_min: 0.01         # 今日涨跌幅下限（通用）
+    ret3_min: 0.05              # 近 3 日累计 > 5%（通用，保留）
+    ret20_min: 0.05             # 近 20 日累计 > 5%（通用，保留）
     amplitude_window: 5         # 排序键：近 5 日平均振幅降序
+    volume_ratio_min: 1.5       # 闸门 4：量比 1 日与 5 日均须 > 1.5
+    no_limit_up_days: 10        # 闸门 5（v1.5）：近 N 日（含当日）不得涨停/触板；0 = 关闭
+    boards:                     # 闸门 3 板块差异化
+      main: { today_pct_max: 0.06, ret10_min: 0.03, ret10_max: 0.15 }
+      gem:  { today_pct_max: 0.11, ret10_min: 0.05, ret10_max: 0.20 }
   benchmark: "sh.000001"
-  fill_rule: "next_open"        # T 日信号 → T+1 开盘成交
+  # v1.6 成交时点（已从配置移除 `fill_rule` —— 它从未被引擎读取，是死配置）：
+  #   买入 = T 日信号 → T+1 开盘价成交；
+  #   清仓卖出 = T 日信号 → **T 日尾盘按收盘价成交**（跌停/停牌顺延 T+1 开盘）。
+  #   口径会写进每次回测的 config.json（config_snapshot）。见 策略规格说明书.md v1.6 §7.6。
 
 # ---------------- 数据源 ----------------
 datasource:

@@ -39,7 +39,6 @@ import json
 import sys
 import time
 from datetime import datetime
-from itertools import product
 from pathlib import Path
 from statistics import fmean
 from typing import Any
@@ -59,8 +58,9 @@ from app.services import sweep_service
 from app.services.data_source import symbols
 from strategies import registry
 from strategies.runner import (
-    MAX_GRID_COMBOS,
     PREHEAT_START,
+    expand_grid,
+    grid_param_names,
     load_market,
     run_backtest,
 )
@@ -151,22 +151,12 @@ def _load_grid_config(path: str) -> dict[str, Any]:
 
 
 def expand_combos(grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
-    """参数网格 → 笛卡尔积。
+    """参数网格 → 组合列表。
 
-    用 `itertools.product` 而不是手写嵌套循环：手写版本漏一层参数不会报错，
-    只会静默少跑好几组 —— 而"少跑"在结果里完全看不出来。
+    实现**委托给** `strategies.runner.expand_grid`（单一实现）—— 后者支持
+    v1.4 的「联合维度」（某 key 的候选值是 dict，用于主板/创业板成对联动）。
     """
-    keys = sorted(grid)  # 排序让组序稳定、可复现
-    for k in keys:
-        if not grid[k]:
-            raise AppError(f"参数 {k} 的候选值为空")
-    combos = [dict(zip(keys, combo, strict=True)) for combo in product(*(grid[k] for k in keys))]
-    if len(combos) > MAX_GRID_COMBOS:
-        raise AppError(
-            f"网格共 {len(combos)} 组，超过上限 {MAX_GRID_COMBOS}。"
-            f"每组 ≈ 一次完整回测，请缩小网格。"
-        )
-    return combos
+    return expand_grid(grid)
 
 
 def make_sweep_id(strategy: str, stamp: str | None = None) -> str:
@@ -201,11 +191,23 @@ def analyse_sensitivity(
         out["is_spike"] = False
         return out, {"x": x, "series": series, "available": False}
 
-    lookup: dict[tuple[Any, ...], float] = {}
+    # ★ 每个 (x, series) 格子里通常不止一行 —— 其余维度也在网格里
+    #   （如 v1.5 的 止损倍数 × 涨停窗口 × 持有期）。所以必须**按格子取均值**。
+    #   v1.5 之前这里是 `lookup[key] = value`（后写覆盖）→ 邻域均值只反映每格里
+    #   随机一行的结果，高原/尖峰判定直接失真。这是本项目最忌的
+    #   "看着算了、其实算错了"那类坑（数在、结论却是错的）。
+    cells: dict[tuple[Any, ...], list[float]] = {}
     for _, r in out.iterrows():
         v = r.get(objective)
         if v is not None and pd.notna(v):
-            lookup[_axis_key(r, x, series)] = float(v)
+            cells.setdefault(_axis_key(r, x, series), []).append(float(v))
+    lookup: dict[tuple[Any, ...], float] = {k: fmean(v) for k, v in cells.items()}
+    n_multi = sum(1 for v in cells.values() if len(v) > 1)
+    if n_multi:
+        logger.info(
+            f"敏感性分析：{n_multi}/{len(cells)} 个格子含多行（其余维度也在网格中）"
+            f"→ 邻域均值按**格子均值**计算"
+        )
 
     xs = sorted({k[0] for k in lookup})
     srs = sorted({k[1] for k in lookup}) if series else [None]
@@ -366,6 +368,11 @@ def render_summary(
     """生成 `summary.md`。目标是**能直接用来下判断**，不是堆数字。"""
     L: list[str] = []
     a = L.append
+    # ★ 用**展开后**的参数名，而不是 `cfg["grid"]` 的原始键 ——
+    #   联合维度（如 `take_profit`）在结果表里展开成 `take_profit_gross_main/_gem`，
+    #   按原始键取会让推荐组合与全网格表**丢掉止盈档位**，
+    #   还会把"只差止盈的两组"误判成"完全一致"（v1.4-sweep 踩到）。
+    param_names = grid_param_names(cfg["grid"])
 
     a(f"# 参数寻优报告 · {sweep_id}")
     a("")
@@ -385,16 +392,16 @@ def render_summary(
 
     a("## 结论")
     a("")
-    if plateau:
-        pk = {k: plateau[k] for k in cfg["grid"] if k in plateau}
+    pk = {k: plateau[k] for k in param_names if k in plateau} if plateau else None
+    sk = {k: single[k] for k in param_names if k in single} if single else None
+    if pk is not None:
         a(f"**推荐组合（高原）**：`{_j(pk)}`")
         a("")
         a(f"  目标指标 `{objective}` = **{_fmt_pct(plateau.get(objective))}**"
           f"｜邻域平均 = {_fmt_pct(plateau.get('neighbor_mean'))}")
         a("")
-    if single:
-        sk = {k: single[k] for k in cfg["grid"] if k in single}
-        if plateau and sk == {k: plateau[k] for k in cfg["grid"] if k in plateau}:
+    if sk is not None:
+        if pk is not None and sk == pk:
             a("单点最优与高原推荐**一致**，说明该点周围稳，信号相对可信。")
         else:
             a(f"单点最优为 `{_j(sk)}`"
@@ -402,13 +409,23 @@ def render_summary(
             a("单点最优几乎必然过拟合，见下方敏感性分析。")
         a("")
 
+    # ★ 目标指标全为负时，「尖峰/高原」的比值口径不适用（它是按"邻居均值 ÷ 本组值、
+    #   默认收益为正"设计的）。不说清楚的话，"0 个尖峰"会被读成"没有噪声点"。
+    if objective in df.columns and not df.empty:
+        vals = pd.to_numeric(df[objective], errors="coerce").dropna()
+        if not vals.empty and (vals <= 0).all():
+            a("> ⚠️ **本网格目标指标全为负**：此时「尖峰」判定用的比值口径不适用"
+              "（它假设收益为正）。故「0 个尖峰」**不等于没有噪声点** ——"
+              "请结合下方全网格表人工读数，别只看推荐组合。")
+            a("")
+
     n_spike = int(df["is_spike"].sum()) if "is_spike" in df.columns and not df.empty else 0
     if n_spike:
         spikes = df[df["is_spike"]]
         a(f"### 检出 {n_spike} 个「尖峰」组合（噪声拟合，不可用）")
         a("")
-        a("| " + " | ".join([*cfg["grid"], f"{objective}", "邻域均值", "落差倍数"]) + " |")
-        a("|" + "---|" * (len(cfg["grid"]) + 3))
+        a("| " + " | ".join([*param_names, f"{objective}", "邻域均值", "落差倍数"]) + " |")
+        a("|" + "---|" * (len(param_names) + 3))
         for _, r in spikes.iterrows():
             own, nm = r.get(objective), r.get("neighbor_mean")
             ratio = "—"
@@ -417,13 +434,15 @@ def render_summary(
                     ratio = f"{float(own) / float(nm):.2f}×"
             except (TypeError, ValueError):
                 pass
-            cells = [f"`{r[k]}`" for k in cfg["grid"]]
+            cells = [f"`{r.get(k)}`" for k in param_names]
             a("| " + " | ".join([*cells, _fmt_pct(own), _fmt_pct(nm), ratio]) + " |")
         a("")
 
     a("## 全网格结果")
     a("")
-    cols = [*cfg["grid"], objective, "max_drawdown", "annual_cost_ratio",
+    # 只看结果表里**真实存在**的参数列（联合维度已展开成 _main/_gem）
+    pcols = [c for c in param_names if c in df.columns]
+    cols = [*pcols, objective, "max_drawdown", "annual_cost_ratio",
             "sharpe", "trade_count", "neighbor_mean"]
     cols = [c for c in cols if c in df.columns]
     a("| " + " | ".join(str(c) for c in cols) + " |")
@@ -434,7 +453,7 @@ def render_summary(
         for c in cols:
             v = r.get(c)
             # 网格参数原样展示；其余按指标口径统一格式化
-            cells.append(f"`{v}`" if c in cfg["grid"] else _fmt_metric(c, v))
+            cells.append(f"`{v}`" if c in param_names else _fmt_metric(c, v))
         a("| " + " | ".join(cells) + " |")
     a("")
 
@@ -594,7 +613,9 @@ def main() -> int:
     }
 
     combos = expand_combos(cfg["grid"])
-    param_names = sorted(cfg["grid"])
+    # 展开后的**真实参数名**：联合维度（如 take_profit）会展开成多个键
+    # （take_profit_gross_main/_gem），敏感性轴必须按展开名匹配。
+    param_names = grid_param_names(cfg["grid"])
     debug_symbols: list[str] | None = None
     if args.symbols:
         # ★ 必须过 `symbols.normalize()`，不能只 strip：
@@ -774,15 +795,17 @@ def main() -> int:
     print(f"  耗时 {elapsed:.1f}s｜结果目录 {relative_to_project(out_dir)}")
     print("=" * 70)
     if plateau:
-        pk = {k: plateau[k] for k in cfg["grid"] if k in plateau}
+        # ★ 用**展开后**的参数名（联合维度如 take_profit → _main/_gem），
+        #   否则打印出来的"推荐组合"会丢掉止盈档位。
+        pk = {k: plateau[k] for k in param_names if k in plateau}
         print(f"  推荐组合（高原）: {_j(pk)}")
         print(
             f"  {cfg['objective']:<16s}: {_fmt_pct(plateau.get(cfg['objective']))}"
             f"｜邻域平均 {_fmt_pct(plateau.get('neighbor_mean'))}"
         )
     if single and plateau:
-        sk = {k: single[k] for k in cfg["grid"] if k in single}
-        pk = {k: plateau[k] for k in cfg["grid"] if k in plateau}
+        sk = {k: single[k] for k in param_names if k in single}
+        pk = {k: plateau[k] for k in param_names if k in plateau}
         if sk != pk:
             print(
                 f"  单点最优（不推荐）: {_j(sk)}"

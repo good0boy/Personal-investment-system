@@ -23,11 +23,13 @@ from strategies.sweep import (
     PCT_METRICS,
     _fmt_metric,
     analyse_sensitivity,
+    best_single,
+    pick_plateau,
     render_summary,
 )
 
 CFG = {"strategy": "momentum", "objective": "annual_return",
-       "grid": {"hold_days_max": [10, 20], "take_profit_net": [0.05, 0.1]}}
+       "grid": {"hold_days_max": [10, 20], "take_profit_gross_main": [0.05, 0.1]}}
 INTERVAL = {"name": "in_sample", "start": "2020-06-01", "end": "2024-12-31",
             "preheat_start": "2020-01-01", "is_out_sample": False}
 
@@ -78,7 +80,7 @@ def _grid_df() -> pd.DataFrame:
         for tp in (0.05, 0.1):
             # 10 档：两档都不错；20 档：整体塌掉 → 该轴"很敏感"
             ret = 0.18 if h == 10 else 0.05
-            rows.append({"hold_days_max": h, "take_profit_net": tp,
+            rows.append({"hold_days_max": h, "take_profit_gross_main": tp,
                          "annual_return": ret, "max_drawdown": -0.3,
                          "annual_cost_ratio": 0.05, "sharpe": 0.5,
                          "trade_count": 100, "failed": False})
@@ -92,7 +94,7 @@ def test_sensitivity_section_is_present_in_summary() -> None:
     """
     df = _grid_df()
     df, sens = analyse_sensitivity(df, x="hold_days_max",
-                                   series="take_profit_net",
+                                   series="take_profit_gross_main",
                                    objective="annual_return")
     text = render_summary(
         sweep_id="t-1", cfg=CFG, interval=INTERVAL, df=df, sens=sens,
@@ -111,7 +113,7 @@ def test_summary_has_no_raw_decimal_for_pct_objective() -> None:
     """★ 报告里不该出现 `-0.05` 这种裸小数（口径统一后应带 `%`）。"""
     df = _grid_df()
     df, sens = analyse_sensitivity(df, x="hold_days_max",
-                                   series="take_profit_net",
+                                   series="take_profit_gross_main",
                                    objective="annual_return")
     text = render_summary(
         sweep_id="t-2", cfg=CFG, interval=INTERVAL, df=df, sens=sens,
@@ -145,3 +147,109 @@ def test_debug_mode_is_flagged_loudly() -> None:
     )
     assert "⚠️ 调试模式" in txt
     assert "不可用于评估策略" in txt
+
+
+# ----------------------------------------------------------------------
+# 联合维度（v1.4）与全负目标指标
+# ----------------------------------------------------------------------
+JOINT_CFG = {
+    "strategy": "momentum",
+    "objective": "annual_return",
+    "grid": {
+        "hold_days_max": [10],
+        "take_profit": [
+            {"take_profit_gross_main": 0.06, "take_profit_gross_gem": 0.10},
+            {"take_profit_gross_main": 0.12, "take_profit_gross_gem": 0.15},
+        ],
+    },
+}
+
+
+def _joint_df() -> pd.DataFrame:
+    def row(tp_main: float, tp_gem: float, own: float) -> dict:
+        return {
+            "hold_days_max": 10,
+            "take_profit_gross_main": tp_main,
+            "take_profit_gross_gem": tp_gem,
+            "annual_return": own,
+            "max_drawdown": -0.5,
+            "annual_cost_ratio": 0.03,
+            "sharpe": -0.5,
+            "trade_count": 200,
+            "failed": False,
+            "is_spike": False,
+        }
+
+    return pd.DataFrame([row(0.06, 0.10, -0.095), row(0.12, 0.15, -0.047)])
+
+
+def test_joint_dimension_columns_appear_in_summary() -> None:
+    """★ 联合维度展开后的参数名必须出现在报告里（v1.4-sweep 踩到）。
+
+    修复前用 `cfg["grid"]` 的原始键取列 —— 而 `take_profit` 在结果表里根本不存在
+    （它展开成 `_main`/`_gem`）→ 推荐组合与全网格表**丢掉止盈档位**，
+    且"只差止盈档"的两组会被误判成**完全一致**。
+    """
+    df = _joint_df()
+    df, sens = analyse_sensitivity(
+        df, x="hold_days_max", series="take_profit_gross_main", objective="annual_return"
+    )
+    plateau = pick_plateau(df, "annual_return")
+    single = best_single(df, "annual_return")
+    text = render_summary(
+        sweep_id="t-joint", cfg=JOINT_CFG, interval=INTERVAL, df=df, sens=sens,
+        objective="annual_return", plateau=plateau, single=single,
+        combos=[{}, {}], elapsed=1.0, debug_symbols=None,
+    )
+    head = text.split("## 全网格结果")[0]
+    # 展开后的止盈参数名必须出现（推荐组合里就要带上）
+    assert "take_profit_gross_main" in head
+    assert "take_profit_gross_gem" in head
+    # 全网格表也要有这两个参数列
+    table = text.split("## 全网格结果", 1)[1].split("\n## ", 1)[0]
+    assert "take_profit_gross_main" in table and "take_profit_gross_gem" in table
+    # 单点最优与高原只差止盈档 → 必须如实并列，**不能**谎报"一致"
+    assert "单点最优为" in head
+    assert "一致" not in head
+
+
+def test_summary_warns_when_all_objective_values_negative() -> None:
+    """★ 目标指标全为负时必须提示"尖峰判定口径不适用"。
+
+    「尖峰」判据是『邻居均值 ÷ 本组值』的比值，隐含"收益为正"；全负时它永不触发，
+    "0 个尖峰"会被误读成"没有噪声点"。
+    """
+    df = _joint_df()
+    df, sens = analyse_sensitivity(
+        df, x="hold_days_max", series="take_profit_gross_main", objective="annual_return"
+    )
+    text = render_summary(
+        sweep_id="t-neg", cfg=JOINT_CFG, interval=INTERVAL, df=df, sens=sens,
+        objective="annual_return", plateau=None, single=None,
+        combos=[{}, {}], elapsed=1.0, debug_symbols=None,
+    )
+    assert "全为负" in text
+
+
+def test_neighbor_mean_averages_cells_with_multiple_rows() -> None:
+    """★ 邻域均值必须按**格子均值**算，不能"后写覆盖"。
+
+    真实网格里每个 (x, series) 格子通常含多行（其余维度也在网格中）。
+    修复前是 `lookup[key] = value`，只留每格最后一行 → 高原/尖峰判定失真，
+    而 `pick_plateau` 正是按 neighbor_mean 选参的。
+    """
+    df = pd.DataFrame([
+        {"hold_days_max": 10, "annual_return": 0.10},
+        {"hold_days_max": 10, "annual_return": 0.20},
+        {"hold_days_max": 20, "annual_return": 0.30},
+        {"hold_days_max": 20, "annual_return": 0.40},
+    ])
+    out, _ = analyse_sensitivity(
+        df, x="hold_days_max", series=None, objective="annual_return"
+    )
+    at10 = out.loc[out["hold_days_max"] == 10, "neighbor_mean"].tolist()
+    at20 = out.loc[out["hold_days_max"] == 20, "neighbor_mean"].tolist()
+    # x=10 的邻居格是 x=20：均值 (0.30+0.40)/2 = 0.35（而非最后一行 0.40）
+    assert at10 == [pytest.approx(0.35), pytest.approx(0.35)]
+    # x=20 的邻居格是 x=10：均值 (0.10+0.20)/2 = 0.15（而非最后一行 0.20）
+    assert at20 == [pytest.approx(0.15), pytest.approx(0.15)]

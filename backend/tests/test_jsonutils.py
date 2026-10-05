@@ -143,12 +143,12 @@ def test_dataframe_row_is_serialisable() -> None:
     这就是 `sweep.py` 生成 summary 时崩掉的最小复现。
     parquet 读回来的整数列是 `np.int64`，裸 dumps 必炸。
     """
-    df = pd.DataFrame([{"hold_days_max": 20, "take_profit_net": 0.1},
-                       {"hold_days_max": 60, "take_profit_net": 0.15}])
+    df = pd.DataFrame([{"hold_days_max": 20, "take_profit_gross_main": 0.1},
+                       {"hold_days_max": 60, "take_profit_gross_main": 0.15}])
     row = df.iloc[0]
     out = json_safe({k: row[k] for k in df.columns})
     text = json.dumps(out, ensure_ascii=False, allow_nan=False)
-    assert json.loads(text) == {"hold_days_max": 20, "take_profit_net": 0.1}
+    assert json.loads(text) == {"hold_days_max": 20, "take_profit_gross_main": 0.1}
 
 
 def test_parquet_roundtrip_row_is_serialisable(tmp_path) -> None:
@@ -158,7 +158,7 @@ def test_parquet_roundtrip_row_is_serialisable(tmp_path) -> None:
     用纯内存 DataFrame 造不出来。
     """
     path = tmp_path / "results.parquet"
-    pd.DataFrame([{"hold_days_max": 20, "take_profit_net": 0.1,
+    pd.DataFrame([{"hold_days_max": 20, "take_profit_gross_main": 0.1,
                    "annual_return": 0.12, "is_spike": False}]).to_parquet(
         path, index=False
     )

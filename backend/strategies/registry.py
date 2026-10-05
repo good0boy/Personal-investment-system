@@ -11,10 +11,14 @@ from __future__ import annotations
 from app.core.errors import NotFoundError
 from strategies.base import BaseStrategy
 from strategies.impl.momentum import MomentumStrategy
+from strategies.impl.momentum_v13 import MomentumV13Strategy
 
 #: 策略名 → 类。新增策略在这里加一行即可。
+#: ⚠️ `momentum_v13` 是 **v1.3 规则的冻结快照**（见该模块 docstring），
+#:    只为历史对照回测/寻优存在，不再维护。
 REGISTRY: dict[str, type[BaseStrategy]] = {
     MomentumStrategy.name: MomentumStrategy,
+    MomentumV13Strategy.name: MomentumV13Strategy,
 }
 
 

@@ -637,7 +637,9 @@ def _definitions() -> tuple[Dimension, ...]:
                 skip_contains=("smoke",),
                 latest=True,
                 columns=(
-                    "hold_days_max", "take_profit_net", "run_id", "total_return",
+                    "hold_days_max", "max_weight_per_stock", "max_positions",
+                    "take_profit_gross_main", "take_profit_gross_gem",
+                    "run_id", "total_return",
                     "annual_return", "max_drawdown", "sharpe", "annual_cost_ratio",
                     "trade_count", "win_rate", "avg_hold_days", "is_spike",
                 ),
