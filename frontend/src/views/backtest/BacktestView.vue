@@ -104,13 +104,16 @@
     </div>
 
     <!-- 表格 -->
-    <div class="panel table-panel" v-loading="loading">
+    <!-- ★ height（而非 max-height）：表格**填满视口剩余空间**、内部滚动。
+         高度由 syncTableHeight() 按视口实测算出 —— 写死 px 会在高视口下
+         在页面底部留出一大块空白（表格 620 + 上方固定区 ≈ 850 < 视口高）。 -->
+    <div ref="tablePanelRef" class="panel table-panel" v-loading="loading">
       <el-table
         ref="tableRef"
         :data="runs"
         size="small"
         stripe
-        max-height="620px"
+        :height="tableH"
         class="run-table"
         empty-text="还没有回测结果。先跑一次：python -m strategies.run"
         @selection-change="onSelectionChange"
@@ -262,7 +265,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { EChartsOption } from 'echarts'
@@ -311,7 +314,32 @@ const sortDesc = ref(true)
 const includeSweep = ref(false)
 
 const tableRef = ref()
+const tablePanelRef = ref<HTMLElement | null>(null)
 const selected = ref<BacktestRunSummary[]>([])
+
+/**
+ * 表格高度 = 视口剩余空间（动态实测，不写死）。
+ *
+ * 为什么不用写死的 max-height：上方提示条 + 筛选条的高度是固定的，
+ * 视口一高（≥900px）表格底下就会留出一大块空白 —— 正是"不要留白、可以填满"要解决的。
+ *
+ * 算法：以 `.el-main` 的**内容坐标**为基准 ——
+ *   表格高 = main 可视高 - 表格顶(内容坐标) - 尾部预留(30 = `.page` 底 padding 28 + 面板边框 2)
+ * 这样面板底边正好落在视口底部，**整页无滚动、无留白**；行多时表格内部滚动。
+ * ⚠️ 必须把 rect.top 换算成内容坐标（减 main 顶 + 加 scrollTop）—— rect.top 是视口坐标，
+ *    `.main` 滚动后会变负，直接用会在滚动状态下算错。
+ */
+const tableH = ref(620)
+function syncTableHeight() {
+  const panel = tablePanelRef.value
+  if (!panel) return
+  const main = panel.closest('.el-main')
+  const mainTop = main ? main.getBoundingClientRect().top : 0
+  const scrolled = main ? main.scrollTop : 0
+  const y = panel.getBoundingClientRect().top - mainTop + scrolled
+  const availH = main ? main.clientHeight : window.innerHeight - mainTop
+  tableH.value = Math.max(300, Math.round(availH - y - 30))
+}
 
 async function load() {
   loading.value = true
@@ -427,7 +455,14 @@ const compareOption = computed<EChartsOption>(() => {
   }
 })
 
-onMounted(load)
+onMounted(() => {
+  load()
+  // 表格高度要在 DOM 就绪后实测一次；窗口尺寸变化时重算。
+  // nextTick 两层：等 v-loading 的遮罩插入后再量，避免拿到过渡态高度。
+  nextTick(() => { syncTableHeight(); requestAnimationFrame(syncTableHeight) })
+  window.addEventListener('resize', syncTableHeight)
+})
+onBeforeUnmount(() => window.removeEventListener('resize', syncTableHeight))
 </script>
 
 <style scoped>
@@ -491,6 +526,9 @@ onMounted(load)
 .table-panel {
   padding: 0;
   overflow: hidden;
+  /* 它是本页最后一个元素：去掉 `.panel` 自带的 16px 下边距，
+     否则页面会比视口多出 16px 滚动量，破坏"正好填满" */
+  margin-bottom: 0;
 }
 
 .run-table {

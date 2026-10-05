@@ -233,11 +233,13 @@
                 </span>
               </div>
 
+              <!-- ★ :height 动态填满视口剩余空间（写死 560 在高视口下底部留白），内部滚动 -->
               <el-table
+                ref="tradesTableRef"
                 :data="trades?.items || []"
                 size="small"
                 stripe
-                max-height="560"
+                :height="tradesH"
                 empty-text="没有符合条件的交易"
               >
                 <el-table-column label="代码" width="106">
@@ -330,10 +332,11 @@
               </div>
 
               <el-table
+                ref="ordersTableRef"
                 :data="orders?.items || []"
                 size="small"
                 stripe
-                max-height="480"
+                :height="ordersH"
                 empty-text="没有委托记录"
               >
                 <el-table-column prop="signal_date" label="信号日" width="102" />
@@ -416,7 +419,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { EChartsOption } from 'echarts'
@@ -458,6 +461,49 @@ const otherRuns = ref<BacktestRunSummary[]>([])
 
 const activeTab = ref('equity')
 const tradeTab = ref('filled')
+
+/**
+ * 「交易记录」两个表格的高度 = 视口剩余空间（动态实测，不写死）。
+ *
+ * 为什么不用写死的 max-height（560/480）：上方概览面板 + 页签头 + 筛选条的高度固定，
+ * 视口一高表格底下就留出一大块空白。改成 `height` 让表格**填满剩余空间、内部滚动**，
+ * 分页条也始终落在视口内。
+ *
+ * 尾部预留：
+ *   成交明细   84 = 分页条 ~24 + 其 margin 12 + 面板 padding-bottom 16 + page 底 padding 28 + 边框 ~4
+ *   委托流水   48 = 上面的分页两条不存在（它没有分页），其余相同
+ * 位置用「相对 `.el-main` 的绝对纵坐标」（rect.top 是视口坐标，滚动后会变负）。
+ */
+const tradesTableRef = ref()
+const ordersTableRef = ref()
+const tradesH = ref(560)
+const ordersH = ref(480)
+
+function fitTableH(
+  el: HTMLElement | undefined | null,
+  tailPx: number,
+  minH: number,
+): number | null {
+  if (!el || !el.offsetParent) return null // 面板未显示（其它页签激活）→ 不量
+  const main = el.closest('.el-main')
+  const mainTop = main ? main.getBoundingClientRect().top : 0
+  const scrolled = main ? main.scrollTop : 0
+  // 以 `.el-main` 的**内容坐标**为基准：表格高 = main 可视高 - 表格顶(内容坐标) - 尾部预留
+  // （rect.top 是视口坐标，滚动后会变负，不能直接用）
+  const y = el.getBoundingClientRect().top - mainTop + scrolled
+  const availH = main ? main.clientHeight : window.innerHeight - mainTop
+  return Math.max(minH, Math.round(availH - y - tailPx))
+}
+
+function syncTableHeights() {
+  const t = fitTableH(tradesTableRef.value?.$el as HTMLElement | null, 84, 280)
+  if (t !== null) tradesH.value = t
+  const o = fitTableH(ordersTableRef.value?.$el as HTMLElement | null, 48, 280)
+  if (o !== null) ordersH.value = o
+}
+
+// 页签切换到「交易记录」时表格才真正可见（此前量到的是 0），必须重新实测
+watch([activeTab, tradeTab], () => nextTick(() => setTimeout(syncTableHeights, 60)))
 
 /** 卖出原因的中文标签（后端只给枚举字面量） */
 const EXIT_REASON_LABEL: Record<string, string> = {
@@ -900,7 +946,11 @@ watch(
   () => void loadAll(),
 )
 
-onMounted(loadAll)
+onMounted(() => {
+  loadAll()
+  window.addEventListener('resize', syncTableHeights)
+})
+onBeforeUnmount(() => window.removeEventListener('resize', syncTableHeights))
 </script>
 
 <style scoped>
@@ -1010,6 +1060,13 @@ onMounted(loadAll)
 /* ---------- Tab ---------- */
 .detail-tabs {
   margin-top: 2px;
+}
+
+/* 页签内面板去掉自带 16px 下边距：它是页签内容的最后一个元素，
+   否则交易记录页会比视口多出 16px 滚动量，破坏"正好填满"。
+   （收益指标页有多个面板堆叠，只有最后一个失去下边距 —— 上间距不受影响。） */
+.detail-tabs .el-tab-pane .panel {
+  margin-bottom: 0;
 }
 
 .metric-key {
