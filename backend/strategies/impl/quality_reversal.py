@@ -1,7 +1,15 @@
-"""策略 v2.0/v2.1「中频质量反转」（`quality_reversal`）。
+"""策略 v2.0/v2.1/v2.2「中频质量反转」（`quality_reversal`）。
 
-**规则唯一依据：`docs/策略规格说明书-v2.0-中频质量反转.md`（文档内版本 v2.1）。**
+**规则唯一依据：`docs/策略规格说明书-v2.0-中频质量反转.md`（文档内版本 v2.2）。**
 本文件只实现它 —— 规则要改先改文档并升版本，再改这里。
+
+v2.2 变更（2026-10-06）
+----------------------
+**阈值基准 `p` 的口径改了**（止损/止盈的倍数档位不变）：
+- v2.1：`p = |近 5 日累计涨跌幅| ÷ 5`（因日间正负对消而**系统性偏小**，实测中位 ≈0.93%）
+- **v2.2：`p = mean(|当日涨跌幅|)`，取最近 5 个交易日**（实测中位 ≈**2.25%**，约 v2.1 的 2.43 倍）
+- 并要求窗口内 **5 天全部可交易**（`trade_status == 1`）且 `pct_chg` 有限，否则 `p` 不可用 → 不触发。
+- 效果：`1×p` 止损线由 −0.4%（"贴脸"）变成 **−2.25%（正常量级）**。
 
 v2.1 变更（2026-10-06）
 ----------------------
@@ -147,7 +155,7 @@ class QualityReversalStrategy(BaseStrategy):
     """中频「质量反转」选股（v2.0）。"""
 
     name = "quality_reversal"
-    version = "2.1"
+    version = "2.2"
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         super().__init__(params)
@@ -288,14 +296,13 @@ class QualityReversalStrategy(BaseStrategy):
             if np.isfinite(r20) and r20 >= realized_max:
                 reasons.append("over_realized")
 
-            # 条件 5/6 · 止损 / 止盈（v2.1）：阈值随个股近期波动自适应
-            #   p = |个股近 5 日累计涨跌幅| ÷ 5（近 5 日**日均**涨跌幅绝对值，非振幅）
+            # 条件 5/6 · 止损 / 止盈（v2.1；p 口径见 v2.2）：阈值随个股近期波动自适应
+            #   p = 近 5 个交易日「每日涨跌幅绝对值」的均值（小数，v2.2）
             #   ⚠️ 毛口径；p 不可用（NaN / ≤0）→ 不触发（不误杀）；mult/abs = 0 → 关闭
             if sl_mult > 0 or tp_mult > 0 or tp_abs > 0:
                 gross = self._gross_return(ctx, pos, symbol, di)
                 if np.isfinite(gross):
-                    p = ctx.market.cum_return(symbol, di, 5)
-                    p = abs(p) / 5.0 if np.isfinite(p) else float("nan")
+                    p = self._p_absmean(ctx, symbol, di, 5)
                     if sl_mult > 0 and np.isfinite(p) and p > 0 and gross <= -sl_mult * p:
                         reasons.append("stop_loss")
                     hit_tp = tp_mult > 0 and np.isfinite(p) and p > 0 and gross >= tp_mult * p
@@ -306,6 +313,30 @@ class QualityReversalStrategy(BaseStrategy):
             if reasons:
                 # 多条件同时成立时全部记录（用 | 连接），便于事后归因
                 ctx.account.order_sell(symbol, reason="|".join(reasons))
+
+    @staticmethod
+    def _p_absmean(ctx: StrategyContext, symbol: str, di: int, n: int = 5) -> float:
+        """阈值基准 `p` = 近 `n` 个交易日「每日涨跌幅绝对值」的均值（小数）。规格 v2.2。
+
+        口径（写死，别改）：
+          · `pct_chg` 矩阵是**百分数**（1.15 = +1.15%）→ 结果 ÷100，与 `cum_return`（小数）对齐；
+          · **要求窗口内 n 天全部可交易（`trade_status == 1`）且 `pct_chg` 有限**，
+            否则返回 NaN（→ 该规则当日**不触发**）。
+            为什么必须掩码：baostock 的停牌日**有行**（`has_data=True`），
+            但 `trade_status=0` 且 `pct_chg` 为 **0 或 NULL**（close 恒等于前收）——
+            不掩码会让停牌日把均值**人为压低**。
+          · 与 v2.1 的 `|cum_return(5)|/5` **不是同一个口径**：后者因日间正负对消而系统性偏小
+            （实测中位 0.93%），本口径中位约 **2.25%**。
+        """
+        si = ctx.market.symbol_index.get(symbol)
+        lo = di - n + 1
+        if si is None or lo < 0:
+            return float("nan")
+        ts = ctx.market.trade_status[lo : di + 1, si]
+        seg = ctx.market.pct_chg[lo : di + 1, si]
+        if ts.shape[0] != n or not bool(np.all(ts == 1)) or not bool(np.all(np.isfinite(seg))):
+            return float("nan")
+        return float(np.abs(seg).mean()) / 100.0
 
     @staticmethod
     def _gross_return(ctx: StrategyContext, pos: Any, symbol: str, di: int) -> float:
@@ -460,7 +491,7 @@ class QualityReversalStrategy(BaseStrategy):
     # ==================================================================
     def config_snapshot(self) -> dict[str, Any]:
         snap = super().config_snapshot()
-        snap["rules_version"] = "策略规格说明书-v2.0-中频质量反转.md v2.1"
+        snap["rules_version"] = "策略规格说明书-v2.0-中频质量反转.md v2.2"
         snap["description"] = (
             "中频「质量反转」：买温和弱势(反转)+基本面成长+低波动低换手，"
             "每 rebalance_every 个交易日建仓、持有 hold_days_max 个交易日"
@@ -479,9 +510,11 @@ class QualityReversalStrategy(BaseStrategy):
         }
         snap["score_dims"] = dict(SCORE_DIMS)
         snap["realized_ret20_max"] = self.params["realized_ret20_max"]
-        # v2.1：止损/止盈（阈值 = mult × p；p = |近5日累计涨跌幅| ÷ 5；0 = 关闭）
+        # v2.1/v2.2：止损/止盈（阈值 = mult × p；p = 近5日「每日涨跌幅绝对值」的均值；0 = 关闭）
         snap["exit_p_rules"] = {
-            "p_def": "abs(ret_5) / 5",
+            "p_def": "mean(abs(pct_chg)) over last 5 tradable days / 100",
+            "p_window": 5,
+            "p_requires_full_tradable_window": True,
             "stop_loss_p_mult": self.params.get("stop_loss_p_mult", 0.0),
             "take_profit_p_mult": self.params.get("take_profit_p_mult", 0.0),
             "take_profit_abs": self.params.get("take_profit_abs", 0.0),

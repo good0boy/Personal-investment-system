@@ -78,11 +78,14 @@ def _install(
     rising_sym: str | None = None,
     rise_daily: float = 0.015,
     drift: dict[str, float] | None = None,
+    alt: dict[str, float] | None = None,
 ) -> None:
-    """4 只横盘标的（可按 `drift` 指定某只的日涨跌幅）+ 基准指数（每日 +0.3%）。
+    """4 只横盘标的（可按 `drift`/`alt` 指定某只的走势）+ 基准指数（每日 +0.3%）。
 
-    `drift = {symbol: 日涨跌幅}`（正=涨、负=跌），从回测首日开始生效。
-    `rising_sym` / `rise_daily` 是 `drift` 的语法糖（保持向后兼容）。
+    - `drift = {symbol: 日涨跌幅}`：**恒定**日涨跌幅（正=涨、负=跌），从回测首日生效。
+    - `alt  = {symbol: 日涨跌幅}`：**正负交替**（+r, −r, +r, …）—— 用来构造
+      "5 日累计收益≈0 但每日绝对涨跌幅非零"的路径，钉住 p 的新旧口径差异。
+    - `rising_sym` / `rise_daily` 是 `drift` 的语法糖（保持向后兼容）。
 
     同时把 `FACTOR_DIR` 指向临时目录 —— 即使不装因子也要指过去，
     否则会读到真实 `data/factor` 污染结果（本项目踩过的坑）。
@@ -90,6 +93,7 @@ def _install(
     rates = dict(drift or {})
     if rising_sym is not None:
         rates[rising_sym] = rise_daily
+    alts = dict(alt or {})
 
     daily = tmp_path / "quote_daily"
     index = tmp_path / "quote_index"
@@ -99,10 +103,16 @@ def _install(
 
     for sym in SYMS:
         closes = np.full(N, 10.0)
-        rate = rates.get(sym, 0.0)
-        if rate:
+        if sym in alts:
+            r = alts[sym]
             for i in range(BT_START_IDX, N):
-                closes[i] = closes[i - 1] * (1 + rate)
+                sign = 1 if (i - BT_START_IDX) % 2 == 0 else -1
+                closes[i] = closes[i - 1] * (1 + sign * r)
+        else:
+            rate = rates.get(sym, 0.0)
+            if rate:
+                for i in range(BT_START_IDX, N):
+                    closes[i] = closes[i - 1] * (1 + rate)
         data_store.write_parquet(_frame(sym, closes), daily / f"{sym}.parquet")
 
     idx = _frame(INDEX_SYM, 3000.0 * np.cumprod(1 + np.full(N, 0.003)))
@@ -111,6 +121,19 @@ def _install(
     monkeypatch.setattr(data_store, "QUOTE_DAILY_DIR", daily)
     monkeypatch.setattr(data_store, "QUOTE_INDEX_DIR", index)
     monkeypatch.setattr(data_store, "FACTOR_DIR", factor)
+
+
+def _suspend(symbol: str, idxs: list[int]) -> None:
+    """把某只标的在指定行索引上标成**停牌**（`trade_status=0`，`pct_chg=0`）。
+
+    必须在 `_install` 之后调用（依赖已 monkeypatch 的 `QUOTE_DAILY_DIR`）。
+    停牌日的 baostock 行是"有价无市"（close 恒等于前收）—— 这正是 `p` 计算要掩掉的情形。
+    """
+    path = Path(data_store.QUOTE_DAILY_DIR) / f"{symbol}.parquet"
+    df = pd.read_parquet(path)
+    df.loc[idxs, "trade_status"] = 0
+    df.loc[idxs, "pct_chg"] = 0.0
+    data_store.write_parquet(df, path)
 
 
 def _install_factors(
@@ -416,6 +439,52 @@ def test_exit_rules_off_by_zero(tmp_path, monkeypatch):
 
 
 # ======================================================================
+# v2.2：p 的口径 = 近 5 日「每日涨跌幅绝对值」的均值
+# ======================================================================
+def test_p_definition_is_mean_abs_daily_return(tmp_path, monkeypatch):
+    """★ 钉住 v2.2 的 p 口径：**每日绝对涨跌幅的均值**，不是累计涨跌幅。
+
+    构造：S0 每日 **±1% 交替** → `mean(|日涨跌幅|)` = **1%**，但 5 日累计收益正负对消 ≈ 0。
+    - v2.2：p ≈ 1% → `2×p` 止损线 = **−2%**，而价格始终在 ±1% 内震荡 → **不该触发止损**。
+    - v2.1（`|累计|/5 ≈ 0`）：阈值 ≈ 0 → 任一微跌都会被"止损"。
+    ⇒ 因此"**没有** stop_loss"这一条断言就足以把两个口径区分开。
+    """
+    _install(tmp_path, monkeypatch, alt={S0: 0.01})
+    _install_factors(_carrier())
+
+    res = _engine(_params(stop_loss_p_mult=2.0)).run()
+
+    assert "stop_loss" not in _reasons(res), (
+        "p 应约为 1%（非 0）→ 2×p 止损线 −2% 不该被 ±1% 的震荡打到"
+    )
+
+
+def test_p_unavailable_when_window_has_suspension(tmp_path, monkeypatch):
+    """★ 近 5 日窗口内有**停牌日** → p 不可用 → 该窗口内止损不触发（不误杀）。
+
+    构造：S0 买入后每日 −1%（p 应 ≈1%，`2×p` 止损线 −2%）。
+    把**买入次日**标成停牌 → 该日所属的 5 日窗口全部失效 → 止损被推迟到窗口清空之后。
+    ⇒ 断言"停牌版比干净版**更晚**才止损"，而不是断言"完全不触发"
+      （否则一个"永不触发"的坏实现也能骗过用例）。
+    """
+    idx = BT_START_IDX + 2                     # 买入成交在 BT_START_IDX+1，故取 +2 不干扰成交
+    sl = {"stop_loss_p_mult": 2.0}
+
+    _install(tmp_path, monkeypatch, drift={S0: -0.01})
+    _install_factors(_carrier())
+    clean = _engine(_params(**sl)).run()
+
+    _suspend(S0, [idx])                        # 同上路径，但插入一个停牌日
+    susp = _engine(_params(**sl)).run()
+
+    assert "stop_loss" in _reasons(clean)
+    assert "stop_loss" in _reasons(susp), "窗口清空之后仍应正常触发（证明不是彻底失效）"
+    clean_hit = clean.trades[clean.trades["symbol"] == S0]["hold_days"].max()
+    susp_hit = susp.trades[susp.trades["symbol"] == S0]["hold_days"].max()
+    assert int(susp_hit) > int(clean_hit), "含停牌日的窗口内 p 不可用 → 止损必须被推迟"
+
+
+# ======================================================================
 # 元信息 / 契约
 # ======================================================================
 def test_registered_and_snapshot_records_v2_contract():
@@ -424,7 +493,7 @@ def test_registered_and_snapshot_records_v2_contract():
 
     inst = QualityReversalStrategy()
     assert inst.name == "quality_reversal"
-    assert inst.version == "2.1"
+    assert inst.version == "2.2"
     # 默认参数来自独立配置节 strategy_defaults_v2，不是 v1.6 的 strategy_defaults
     assert inst.params["max_positions"] == 10
     assert inst.params["max_weight_per_stock"] == 0.10
@@ -436,13 +505,15 @@ def test_registered_and_snapshot_records_v2_contract():
     assert inst.params["take_profit_abs"] == 0.0
 
     snap = inst.config_snapshot()
-    assert "v2.1" in snap["rules_version"]
+    assert "v2.2" in snap["rules_version"]
     assert snap["buy_fill_rule"] == "next_open"
     assert snap["sell_fill_rule"] == "same_close"
     assert snap["gates"]["quality"] is True
     assert snap["gates"]["reversal_pct"] == 0.5
     assert snap["score_dims"]["ret_50"] == -1
     assert snap["score_dims"]["profit_yoy"] == 1
-    # v2.1：p 口径与止损/止盈档位必须进快照（否则新旧口径的产物无法区分）
-    assert snap["exit_p_rules"]["p_def"] == "abs(ret_5) / 5"
+    # v2.1/v2.2：p 口径与止损/止盈档位必须进快照（否则新旧口径的产物无法区分）
+    assert snap["exit_p_rules"]["p_def"] == "mean(abs(pct_chg)) over last 5 tradable days / 100"
+    assert snap["exit_p_rules"]["p_window"] == 5
+    assert snap["exit_p_rules"]["p_requires_full_tradable_window"] is True
     assert snap["exit_p_rules"]["stop_loss_p_mult"] == 0.0
