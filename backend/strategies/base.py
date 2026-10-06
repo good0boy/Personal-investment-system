@@ -121,6 +121,9 @@ EXIT_REASONS: tuple[str, ...] = (
     "limit_down",      # 跌停
     "st",              # isST == 1
     "delist",          # 退市/数据终止强平（引擎发起，非策略信号）
+    # --- 策略 v2.0「中频质量反转」新增（与 v1.6 并存，各自只用自己的子集）---
+    "quality_broken",  # 基本面成长转负（profit_yoy / revenue_yoy < 0）
+    "over_realized",   # 近 20 日累计涨幅 ≥ 阈值：反转已过度兑现
 )
 
 

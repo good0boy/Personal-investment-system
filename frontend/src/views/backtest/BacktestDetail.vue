@@ -514,6 +514,8 @@ const EXIT_REASON_LABEL: Record<string, string> = {
   limit_down: '跌停',
   st: 'ST',
   delist: '退市强平',
+  quality_broken: '基本面恶化',
+  over_realized: '过度兑现',
 }
 
 const ORDER_STATUS_LABEL: Record<string, string> = {

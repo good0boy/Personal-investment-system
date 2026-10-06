@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 __all__ = [
+    "amount_mean",
     "amplitude_mean",
     "ma_bias",
     "max_daily_ret",
@@ -188,6 +189,20 @@ def turnover_mean(q: pd.DataFrame, window: int = 20) -> pd.Series:
     """
     turn = pd.to_numeric(q["turn"], errors="coerce").to_numpy(dtype="float64")
     return _rolling(q, turn, window, "mean")
+
+
+def amount_mean(q: pd.DataFrame, window: int = 20) -> pd.Series:
+    """近 `window` 个交易日的平均成交额（**amount 原始单位，通常为元**）。
+
+    用途：中频策略的「流动性下限」过滤（成交额过小的标的进出不便）。
+    ⚠️ 与 `turnover_mean` 是**两个不同口径**，别混用：
+      · `turnover_mean` 取 `turn` 字段，是**换手率（%）**，刻画"换手活跃度"，与股本归一；
+      · `amount_mean` 取 `amount` 字段，是**成交额（元）**，刻画"能承接多少钱"，
+        与股本**无关** —— 小盘股换手率可以很高但成交额很小。
+    窗口不足 → NaN（`_rolling` 的 `min_periods=window`）。
+    """
+    amount = pd.to_numeric(q["amount"], errors="coerce").to_numpy(dtype="float64")
+    return _rolling(q, amount, window, "mean")
 
 
 def volume_ratio_n(q: pd.DataFrame, window: int = 5) -> pd.Series:

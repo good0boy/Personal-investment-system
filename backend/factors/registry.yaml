@@ -197,6 +197,21 @@ factors:
     unit: "%（百分数，全市场均值约 1~3）"
     desc: "baostock turn 字段（已是百分数）的近 20 日均值。单位：% 。注意全市场平均值约 1~3，不是 0.01~0.03。"
 
+  - name: amount_mean_20
+    cname: 近20日平均成交额
+    category: daily
+    direction: 0
+    impl: factors.impl.daily.amount_mean
+    params: {window: 20}
+    data_deps: [quote_daily]
+    tags: [量价, 流动性]
+    unit: "元（成交额原始单位）"
+    desc: >
+      近 20 个交易日 amount 的算术平均值，单位：元（原始成交额，未做任何归一）。
+      分档停牌行在入口已剔除；窗口不足 20 日为 NaN。
+      ⚠️ 与 turnover_20 是两个口径：换手率（%）按股本归一，成交额（元）刻画"能承接多少钱"——
+      小盘股可以换手率很高但成交额很小。本因子用于中频策略的流动性下限过滤。
+
   - name: ma_bias_20
     cname: 20日乖离率
     category: daily

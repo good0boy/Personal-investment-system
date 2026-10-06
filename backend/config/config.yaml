@@ -96,6 +96,29 @@ strategy_defaults:
   #   清仓卖出 = T 日信号 → **T 日尾盘按收盘价成交**（跌停/停牌顺延 T+1 开盘）。
   #   口径会写进每次回测的 config.json（config_snapshot）。见 策略规格说明书.md v1.6 §7.6。
 
+# ---------------- 策略 v2.0「中频质量反转」默认参数 ----------------
+# ★ 独立配置节，与上面的 strategy_defaults（现役 v1.6 momentum）**并存、互不干扰**。
+#   规则唯一依据：docs/策略规格说明书-v2.0-中频质量反转.md
+#   读取入口：settings.strategy_v2（app/core/config.py::StrategyDefaultsV2）
+#   本质差别：买「温和弱势(反转)」而非最强；持有 20~40 交易日（非 ≤10）；
+#            每 rebalance_every 日才建仓一次（非每日）→ 换手低、成本目标 ≤3%/年。
+strategy_defaults_v2:
+  init_cash: 1000000
+  max_positions: 10             # 更分散（逆向选股靠广度）
+  max_weight_per_stock: 0.10    # 10 只 × 10% = 100%
+  hold_days_max: 30             # 目标持有期（交易日）
+  rebalance_every: 5            # 每 N 个交易日才建仓一次（控换手）
+  index_ret20_min: -0.10        # 门1 大盘非急跌：上证近20日累计 > 此值
+  reversal_pct: 0.50            # 门2 反转门：ret_50 ≤ 截面 50 分位（不买最强半数）
+  max_ret_20_max: 0.15          # 门2 排除脉冲股：近20日最大单日涨幅上限
+  use_quality_gate: true        # 门3 质量门：profit_yoy>0 且 revenue_yoy>0
+  use_lowvol_gate: true         # 门4 低波动：volatility_20 ≤ 截面中位
+  use_lowturn_gate: true        # 门4 低换手：turnover_20 ≤ 截面中位
+  use_liquidity_gate: true      # 门0 流动性：amount_mean_20 ≥ 下限
+  min_amount_mean_20: 50000000  # 门0 近20日日均成交额下限（元）
+  realized_ret20_max: 0.30      # 退出：近20日累计涨幅 ≥ 此值（过度兑现）→ 卖出
+  benchmark: "sh.000001"
+
 # ---------------- 数据源 ----------------
 datasource:
   # 行情主源（模块 3/4 只用它）

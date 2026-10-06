@@ -113,6 +113,9 @@ EXIT_REASON_CN: dict[str, str] = {
     "limit_down": "跌停",
     "st": "ST 风险",
     "delist": "退市强平",
+    # --- 策略 v2.0「中频质量反转」新增 ---
+    "quality_broken": "基本面恶化",
+    "over_realized": "过度兑现",
 }
 
 LEVELS: tuple[str, ...] = ("info", "warning", "error")

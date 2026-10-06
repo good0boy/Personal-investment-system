@@ -219,6 +219,40 @@ class StrategyDefaults(BaseModel):
     #    见 策略规格说明书.md v1.6 §2.1 / §7.6。
 
 
+class StrategyDefaultsV2(BaseModel):
+    """策略 v2.0「中频质量反转」（`quality_reversal`）的默认参数。
+
+    ★ 独立于 `strategy_defaults`（那是现役 v1.6 `momentum` 的）。
+      两个策略**并存**，参数各存一份、互不干扰 —— 改 v2.0 不会动到 v1.6。
+      规则唯一依据：`docs/策略规格说明书-v2.0-中频质量反转.md`。
+
+    与 v1.6 的本质差别：买**温和弱势**（反转）而非最强；持有 20~40 个交易日
+    （而非 ≤10）；每 `rebalance_every` 个交易日才建仓一次（而非每日）。
+    """
+
+    init_cash: float = 1_000_000
+    max_positions: int = 10                 # 更分散：逆向选股靠广度
+    max_weight_per_stock: float = 0.10      # 10 只 × 10% = 100%
+    hold_days_max: int = 30                 # 目标持有期（交易日）
+    rebalance_every: int = 5                # 每 N 个交易日才建仓一次（控换手）
+    # --- 门 1 · 大盘非急跌（粗择时，比 v1.6 的逐日口径宽松）---
+    index_ret20_min: float = -0.10          # 上证近 20 日累计涨跌幅下限
+    # --- 门 2 · 反转门（不追高）---
+    reversal_pct: float = 0.5               # ret_50 ≤ 截面该分位（0.5 = 不买最强的半数）
+    max_ret_20_max: float = 0.15            # 近 20 日最大单日涨幅上限（排除脉冲股）
+    # --- 门 3 · 质量门（基本面成长）---
+    use_quality_gate: bool = True
+    # --- 门 4 · 低波动 / 低换手 ---
+    use_lowvol_gate: bool = True
+    use_lowturn_gate: bool = True
+    # --- 门 0 · 流动性下限 ---
+    use_liquidity_gate: bool = True
+    min_amount_mean_20: float = 5.0e7       # 近 20 日日均成交额下限（元）
+    # --- 退出：过度兑现 ---
+    realized_ret20_max: float = 0.30        # 近 20 日累计涨幅 ≥ 此值 → 反转已过度兑现，卖出
+    benchmark: str = "sh.000001"
+
+
 class AkshareThrottleConfig(BaseModel):
     """akshare 专项节流与熔断参数。
 
@@ -321,6 +355,8 @@ class YamlSettings(BaseModel):
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
     cost: CostConfig = Field(default_factory=CostConfig)
     strategy_defaults: StrategyDefaults = Field(default_factory=StrategyDefaults)
+    # ★ v2.0「中频质量反转」独立配置节（与 strategy_defaults 并存，互不干扰）
+    strategy_defaults_v2: StrategyDefaultsV2 = Field(default_factory=StrategyDefaultsV2)
     datasource: DatasourceConfig = Field(default_factory=DatasourceConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     paper: PaperConfig = Field(default_factory=PaperConfig)
@@ -387,6 +423,11 @@ class Settings:
     @property
     def strategy(self) -> StrategyDefaults:
         return self.yaml.strategy_defaults
+
+    @property
+    def strategy_v2(self) -> StrategyDefaultsV2:
+        """策略 v2.0「中频质量反转」的默认参数（与 v1.6 并存）。"""
+        return self.yaml.strategy_defaults_v2
 
     @property
     def datasource(self) -> DatasourceConfig:

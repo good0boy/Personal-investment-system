@@ -510,7 +510,7 @@ def _definitions() -> tuple[Dimension, ...]:
             name="日度行情因子",
             group="factor",
             origin="derived",
-            desc="由日线算出的 15 个因子：收益 / 动量 / 波动 / 换手 / 振幅 / RSI。",
+            desc="由日线算出的 16 个因子：收益 / 动量 / 波动 / 换手 / 成交额 / 振幅 / RSI。",
             grain="1 行 = 1 只标的 1 个交易日",
             producer="python -m factors.calc --category daily",
             root=FACTOR_DIR / "daily",

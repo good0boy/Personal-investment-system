@@ -12,13 +12,18 @@ from app.core.errors import NotFoundError
 from strategies.base import BaseStrategy
 from strategies.impl.momentum import MomentumStrategy
 from strategies.impl.momentum_v13 import MomentumV13Strategy
+from strategies.impl.quality_reversal import QualityReversalStrategy
 
 #: 策略名 → 类。新增策略在这里加一行即可。
 #: ⚠️ `momentum_v13` 是 **v1.3 规则的冻结快照**（见该模块 docstring），
 #:    只为历史对照回测/寻优存在，不再维护。
+#: ⚠️ `quality_reversal` 是 **v2.0 独立规则集**（中频质量反转），
+#:    与现役 v1.6 `momentum` 并存、互不干扰，见
+#:    `docs/策略规格说明书-v2.0-中频质量反转.md`。
 REGISTRY: dict[str, type[BaseStrategy]] = {
     MomentumStrategy.name: MomentumStrategy,
     MomentumV13Strategy.name: MomentumV13Strategy,
+    QualityReversalStrategy.name: QualityReversalStrategy,
 }
 
 
