@@ -21,6 +21,10 @@ def test_strategy_v2_is_loadable_and_independent():
     assert v2.reversal_pct == 0.5
     assert v2.use_quality_gate is True
     assert v2.min_amount_mean_20 == 5.0e7
+    # v2.1：止损/止盈默认全 0（关闭）→ 不改变 M1 基线行为
+    assert v2.stop_loss_p_mult == 0.0
+    assert v2.take_profit_p_mult == 0.0
+    assert v2.take_profit_abs == 0.0
 
 
 def test_v16_defaults_untouched():

@@ -1,0 +1,52 @@
+# ============================================================
+# 参数寻优网格（策略 v2.1）：450 组
+#   止损(×p) × 止盈(×p 或 6%) × 持有期 × 最大持仓数
+# ============================================================
+# 依据：docs/策略规格说明书-v2.0-中频质量反转.md（文档内 v2.1）§4 / §7.4
+#
+# ★ 阈值基准 p = |个股近 5 日累计涨跌幅| ÷ 5（近 5 日**日均**涨跌幅绝对值，**不是振幅**）。
+#   主人点名的口径：p 刻意取小 → 等价于"日内级"止损止盈。
+#   ⚠️ 预期提示：一只近 5 日只动 2% 的票 p≈0.4%，1×p 止损线仅 −0.4% —— 几乎必被打掉。
+#   网格里保留 **0 档（关闭）** 作对照，这正是回答"这条规则值不值"的内置消融。
+#
+# ⚠️ `take_profit` 是**联合维度**（候选为 dict）：因为"6% 绝对档"需要额外带一个参数键。
+#   `_normalize_grid` 要求同一维度里各候选 dict 的**键集完全一致** ——
+#   所以每档都同时给出 `take_profit_p_mult` 与 `take_profit_abs`（不用的置 0）。
+#
+# ⚠️ `max_positions`（2/5/10）在单票权重固定 10% 下 = 暴露 20%/50%/100%。
+#   v1.4 已实测"仓位/持仓数只是**等比缩放暴露**、不产生 alpha"（研究 §3.9），
+#   本次按主人要求纳入网格，但解读时必须注明这一点。
+#
+# 用法：
+#   cd backend
+#   python -m strategies.sweep --config sweeps/quality_rev.yaml --sweep-id v2.1-quality-rev-sweep
+#
+# ⚠️ 参数寻优只允许跑**样本内**（2020-06-01 ~ 2024-12-31）；`assert_in_sample` 硬拒绝样本外。
+# ⚠️ 实测单组 ≈18~25s（全市场）→ 450 组预计 **2~3 小时**。建议后台跑。
+# ⚠️ `--sweep-id` 会撞名覆盖，务必带 `-sweep` 后缀（磁盘已有 v1.3/v1.4/v1.5 系列产物）。
+# ============================================================
+
+strategy: quality_reversal
+description: 止损(×p) × 止盈(×p 或 6%) × 持有期 × 最大持仓数
+
+params:
+  stop_loss_p_mult: [0.0, 1.0, 1.5, 2.0, 3.0]      # 5 档；0 = 关闭（内置消融）
+  take_profit:                                      # 联合维度：6 档（键集须一致）
+    - { take_profit_p_mult: 0.0, take_profit_abs: 0.0 }      # 关闭
+    - { take_profit_p_mult: 1.0, take_profit_abs: 0.0 }
+    - { take_profit_p_mult: 1.5, take_profit_abs: 0.0 }
+    - { take_profit_p_mult: 2.0, take_profit_abs: 0.0 }
+    - { take_profit_p_mult: 3.0, take_profit_abs: 0.0 }
+    - { take_profit_p_mult: 0.0, take_profit_abs: 0.06 }     # 6% 绝对档
+  hold_days_max: [5, 10, 20, 30, 40]                # 5 档
+  max_positions: [2, 5, 10]                         # 3 档
+
+# 敏感性分析：横轴取止损倍数（新变量，直接回答"止损该不该加、加多紧"）；
+# 分组轴取止盈倍数。两轴都必须是**展开后的**真实参数名。
+sensitivity:
+  x: stop_loss_p_mult
+  series: take_profit_p_mult
+
+# 主指标：用于挑最优组合与计算敏感性落差
+#   可选 annual_return / total_return / sharpe / calmar
+objective: annual_return

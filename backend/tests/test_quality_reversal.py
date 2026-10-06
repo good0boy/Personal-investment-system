@@ -77,12 +77,20 @@ def _install(
     *,
     rising_sym: str | None = None,
     rise_daily: float = 0.015,
+    drift: dict[str, float] | None = None,
 ) -> None:
-    """4 只横盘标的（可指定一只持续上涨）+ 基准指数（每日 +0.3%）。
+    """4 只横盘标的（可按 `drift` 指定某只的日涨跌幅）+ 基准指数（每日 +0.3%）。
+
+    `drift = {symbol: 日涨跌幅}`（正=涨、负=跌），从回测首日开始生效。
+    `rising_sym` / `rise_daily` 是 `drift` 的语法糖（保持向后兼容）。
 
     同时把 `FACTOR_DIR` 指向临时目录 —— 即使不装因子也要指过去，
     否则会读到真实 `data/factor` 污染结果（本项目踩过的坑）。
     """
+    rates = dict(drift or {})
+    if rising_sym is not None:
+        rates[rising_sym] = rise_daily
+
     daily = tmp_path / "quote_daily"
     index = tmp_path / "quote_index"
     factor = tmp_path / "factor"
@@ -91,9 +99,10 @@ def _install(
 
     for sym in SYMS:
         closes = np.full(N, 10.0)
-        if sym == rising_sym:
+        rate = rates.get(sym, 0.0)
+        if rate:
             for i in range(BT_START_IDX, N):
-                closes[i] = closes[i - 1] * (1 + rise_daily)
+                closes[i] = closes[i - 1] * (1 + rate)
         data_store.write_parquet(_frame(sym, closes), daily / f"{sym}.parquet")
 
     idx = _frame(INDEX_SYM, 3000.0 * np.cumprod(1 + np.full(N, 0.003)))
@@ -149,6 +158,10 @@ def _params(**over: object) -> dict:
         "use_liquidity_gate": False,
         "min_amount_mean_20": 5.0e7,
         "realized_ret20_max": 10.0,  # 默认不触发
+        # v2.1 新增：止损/止盈（默认全 0 = 关闭 → 等价 v2.0 行为）
+        "stop_loss_p_mult": 0.0,
+        "take_profit_p_mult": 0.0,
+        "take_profit_abs": 0.0,
     }
     p.update(over)
     return p
@@ -336,6 +349,73 @@ def test_same_config_two_runs_identical(tmp_path, monkeypatch):
 
 
 # ======================================================================
+# v2.1 新增：止损 / 止盈（阈值 = mult × p，p = |近5日累计涨跌幅| ÷ 5）
+# ======================================================================
+def _reasons(res) -> str:
+    if res.trades.empty:
+        return ""
+    return "|".join(res.trades["exit_reason"].astype(str))
+
+
+def test_stop_loss_by_p_multiple_fires(tmp_path, monkeypatch):
+    """★ 止损：毛亏 ≥ mult × p 即卖出（p 随个股近 5 日波动自适应）。"""
+    _install(tmp_path, monkeypatch, drift={S0: -0.01})   # S0 买入后每日 −1%
+    _install_factors(_carrier())
+
+    # 关闭止损 → 30 日窗口内 S0 不会出场（无其他退出条件）
+    off = _engine(_params()).run()
+    # 打开 2×p 止损 → S0 应被快速止损
+    on = _engine(_params(stop_loss_p_mult=2.0)).run()
+
+    assert "stop_loss" not in _reasons(off), "止损关闭时不应出现 stop_loss"
+    assert "stop_loss" in _reasons(on), "打开 2×p 止损后应触发 stop_loss"
+    hit = on.trades[on.trades["exit_reason"].astype(str).str.contains("stop_loss")]
+    assert set(hit["symbol"]) == {S0}, "只该止损下跌的那只"
+    assert int(hit["hold_days"].max()) <= 5, "p 口径刻意取小 → 应当很快被打掉"
+
+
+def test_take_profit_by_p_multiple_fires(tmp_path, monkeypatch):
+    """★ 止盈（×p）：毛盈 ≥ mult × p 即卖出。"""
+    _install(tmp_path, monkeypatch, drift={S0: 0.01})    # S0 买入后每日 +1%
+    _install_factors(_carrier())
+
+    off = _engine(_params()).run()
+    on = _engine(_params(take_profit_p_mult=2.0)).run()
+
+    assert "take_profit" not in _reasons(off), "止盈关闭时不应出现 take_profit"
+    assert "take_profit" in _reasons(on), "打开 2×p 止盈后应触发 take_profit"
+    hit = on.trades[on.trades["exit_reason"].astype(str).str.contains("take_profit")]
+    assert set(hit["symbol"]) == {S0}, "只该止盈上涨的那只"
+
+
+def test_take_profit_abs_6pct_fires(tmp_path, monkeypatch):
+    """★ 止盈（6% 绝对档）：与 p 无关，毛盈达 6% 即卖出。"""
+    _install(tmp_path, monkeypatch, drift={S0: 0.02})    # 每日 +2% → 约 3 日达 6%
+    _install_factors(_carrier())
+
+    off = _engine(_params()).run()
+    on = _engine(_params(take_profit_abs=0.06)).run()
+
+    assert "take_profit" not in _reasons(off)
+    assert "take_profit" in _reasons(on), "打开 6% 绝对止盈后应触发"
+    hit = on.trades[on.trades["exit_reason"].astype(str).str.contains("take_profit")]
+    assert set(hit["symbol"]) == {S0}
+    # 6% 档应对应约 +6% 的毛收益（不是 p 倍数那种极紧的阈值）
+    assert float(hit["net_return"].mean()) > 0.03
+
+
+def test_exit_rules_off_by_zero(tmp_path, monkeypatch):
+    """★ 三个新参数全 0 = 关闭 → 不产生 stop_loss / take_profit（等价 v2.0 行为）。"""
+    _install(tmp_path, monkeypatch, drift={S0: -0.01, S1: 0.01})   # 一跌一涨
+    _install_factors(_carrier())
+
+    res = _engine(_params()).run()
+
+    r = _reasons(res)
+    assert "stop_loss" not in r and "take_profit" not in r, "0 档必须完全关闭这两条规则"
+
+
+# ======================================================================
 # 元信息 / 契约
 # ======================================================================
 def test_registered_and_snapshot_records_v2_contract():
@@ -344,18 +424,25 @@ def test_registered_and_snapshot_records_v2_contract():
 
     inst = QualityReversalStrategy()
     assert inst.name == "quality_reversal"
-    assert inst.version == "2.0"
+    assert inst.version == "2.1"
     # 默认参数来自独立配置节 strategy_defaults_v2，不是 v1.6 的 strategy_defaults
     assert inst.params["max_positions"] == 10
     assert inst.params["max_weight_per_stock"] == 0.10
     assert inst.params["hold_days_max"] == 30
     assert inst.params["rebalance_every"] == 5
+    # v2.1：止损/止盈默认全 0（关闭）→ 行为与 v2.0/M1 基线一致
+    assert inst.params["stop_loss_p_mult"] == 0.0
+    assert inst.params["take_profit_p_mult"] == 0.0
+    assert inst.params["take_profit_abs"] == 0.0
 
     snap = inst.config_snapshot()
-    assert "v2.0" in snap["rules_version"]
+    assert "v2.1" in snap["rules_version"]
     assert snap["buy_fill_rule"] == "next_open"
     assert snap["sell_fill_rule"] == "same_close"
     assert snap["gates"]["quality"] is True
     assert snap["gates"]["reversal_pct"] == 0.5
     assert snap["score_dims"]["ret_50"] == -1
     assert snap["score_dims"]["profit_yoy"] == 1
+    # v2.1：p 口径与止损/止盈档位必须进快照（否则新旧口径的产物无法区分）
+    assert snap["exit_p_rules"]["p_def"] == "abs(ret_5) / 5"
+    assert snap["exit_p_rules"]["stop_loss_p_mult"] == 0.0

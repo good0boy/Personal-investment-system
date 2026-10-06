@@ -1,7 +1,16 @@
-"""策略 v2.0「中频质量反转」（`quality_reversal`）。
+"""策略 v2.0/v2.1「中频质量反转」（`quality_reversal`）。
 
-**规则唯一依据：`docs/策略规格说明书-v2.0-中频质量反转.md`。**
+**规则唯一依据：`docs/策略规格说明书-v2.0-中频质量反转.md`（文档内版本 v2.1）。**
 本文件只实现它 —— 规则要改先改文档并升版本，再改这里。
+
+v2.1 变更（2026-10-06）
+----------------------
+**新增止损 / 止盈两条退出**（规格 §2.3 条件 5/6）：
+- 阈值基准 **`p` = |个股近 5 日累计涨跌幅| ÷ 5**（近 5 日**日均**涨跌幅的绝对值，**不是振幅**）
+  —— p 是个股价、每只不同，阈值随个股近期波动自适应。
+- `stop_loss_p_mult` / `take_profit_p_mult`：毛损益 ≥ mult × p 即触发；`take_profit_abs` 是绝对止盈档。
+- **0 = 关闭**（参数默认全 0 → 行为与 v2.0/M1 基线一致）；`p` 不可用 → 不触发（不误杀）。
+- 与既有的 `over_realized` / `time_stop` / `quality_broken` / `st` / `limit_down` **并存**。
 
 定位（与现役 v1.6 `momentum` 的本质差别）
 -----------------------------------------
@@ -12,7 +21,7 @@
 | 信号频率 | 每日选股 | **每 `rebalance_every` 个交易日**才建仓一次 |
 | 持仓数 | 5 | **8~10**（逆向选股靠广度） |
 | 个股止损 | 1.2×近5日均振幅（紧） | **不设**（v1.5 已实测"越松越好"） |
-| 固定止盈 | 6% | **不做**（改用「过度兑现」退出） |
+| 固定止盈 | 6% | **可选**（v2.1：×p 或绝对 6%；默认关闭） |
 
 为什么这么改（本项目实测依据，见 `docs/回测与策略研究.md`）
 ----------------------------------------------------------
@@ -138,7 +147,7 @@ class QualityReversalStrategy(BaseStrategy):
     """中频「质量反转」选股（v2.0）。"""
 
     name = "quality_reversal"
-    version = "2.0"
+    version = "2.1"
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         super().__init__(params)
@@ -160,6 +169,10 @@ class QualityReversalStrategy(BaseStrategy):
             "use_liquidity_gate": v2.use_liquidity_gate,
             "min_amount_mean_20": v2.min_amount_mean_20,
             "realized_ret20_max": v2.realized_ret20_max,
+            # --- v2.1 新增：止损 / 止盈（阈值基准 p，0 = 关闭）---
+            "stop_loss_p_mult": v2.stop_loss_p_mult,
+            "take_profit_p_mult": v2.take_profit_p_mult,
+            "take_profit_abs": v2.take_profit_abs,
         }
         p.update(self.params)          # 调用方/寻优覆盖
         self.params = p
@@ -239,16 +252,21 @@ class QualityReversalStrategy(BaseStrategy):
         return at_limit_down(close, pre, limit)
 
     # ==================================================================
-    # 清仓（规格 §2.4：4 个条件，任一触发即卖出；T 日尾盘按收盘价成交）
+    # 清仓（规格 §2.3：6 个条件，任一触发即卖出；T 日尾盘按收盘价成交）
     # ==================================================================
     def _sell_side(self, ctx: StrategyContext, di: int) -> None:
         hold_max = int(self.params["hold_days_max"])
         realized_max = float(self.params["realized_ret20_max"])
+        # v2.1：止损/止盈（阈值 = mult × p；0 = 关闭）
+        sl_mult = float(self.params.get("stop_loss_p_mult", 0.0))
+        tp_mult = float(self.params.get("take_profit_p_mult", 0.0))
+        tp_abs = float(self.params.get("take_profit_abs", 0.0))
         day = ctx.day
         profit = self._factor_row("profit_yoy", day, list(ctx.account.positions.keys()))
         revenue = self._factor_row("revenue_yoy", day, list(ctx.account.positions.keys()))
 
         for symbol in list(ctx.account.positions.keys()):
+            pos = ctx.account.positions[symbol]
             reasons: list[str] = []
 
             # 条件 1 · 到期换仓：持有满 hold_days_max 个交易日（含首尾计数）
@@ -270,9 +288,33 @@ class QualityReversalStrategy(BaseStrategy):
             if np.isfinite(r20) and r20 >= realized_max:
                 reasons.append("over_realized")
 
+            # 条件 5/6 · 止损 / 止盈（v2.1）：阈值随个股近期波动自适应
+            #   p = |个股近 5 日累计涨跌幅| ÷ 5（近 5 日**日均**涨跌幅绝对值，非振幅）
+            #   ⚠️ 毛口径；p 不可用（NaN / ≤0）→ 不触发（不误杀）；mult/abs = 0 → 关闭
+            if sl_mult > 0 or tp_mult > 0 or tp_abs > 0:
+                gross = self._gross_return(ctx, pos, symbol, di)
+                if np.isfinite(gross):
+                    p = ctx.market.cum_return(symbol, di, 5)
+                    p = abs(p) / 5.0 if np.isfinite(p) else float("nan")
+                    if sl_mult > 0 and np.isfinite(p) and p > 0 and gross <= -sl_mult * p:
+                        reasons.append("stop_loss")
+                    hit_tp = tp_mult > 0 and np.isfinite(p) and p > 0 and gross >= tp_mult * p
+                    hit_tp = hit_tp or (tp_abs > 0 and gross >= tp_abs)
+                    if hit_tp:
+                        reasons.append("take_profit")
+
             if reasons:
                 # 多条件同时成立时全部记录（用 | 连接），便于事后归因
                 ctx.account.order_sell(symbol, reason="|".join(reasons))
+
+    @staticmethod
+    def _gross_return(ctx: StrategyContext, pos: Any, symbol: str, di: int) -> float:
+        """毛收益率 = 当日后复权收盘价 / 买入成交价 − 1（不扣任何费用）。"""
+        price = ctx.market.close_at(symbol, di)
+        entry = float(getattr(pos, "entry_price", float("nan")))
+        if not np.isfinite(price) or price <= 0 or not np.isfinite(entry) or entry <= 0:
+            return float("nan")
+        return float(price / entry - 1.0)
 
     @staticmethod
     def _quality_broken(
@@ -418,7 +460,7 @@ class QualityReversalStrategy(BaseStrategy):
     # ==================================================================
     def config_snapshot(self) -> dict[str, Any]:
         snap = super().config_snapshot()
-        snap["rules_version"] = "策略规格说明书-v2.0-中频质量反转.md v2.0"
+        snap["rules_version"] = "策略规格说明书-v2.0-中频质量反转.md v2.1"
         snap["description"] = (
             "中频「质量反转」：买温和弱势(反转)+基本面成长+低波动低换手，"
             "每 rebalance_every 个交易日建仓、持有 hold_days_max 个交易日"
@@ -437,4 +479,11 @@ class QualityReversalStrategy(BaseStrategy):
         }
         snap["score_dims"] = dict(SCORE_DIMS)
         snap["realized_ret20_max"] = self.params["realized_ret20_max"]
+        # v2.1：止损/止盈（阈值 = mult × p；p = |近5日累计涨跌幅| ÷ 5；0 = 关闭）
+        snap["exit_p_rules"] = {
+            "p_def": "abs(ret_5) / 5",
+            "stop_loss_p_mult": self.params.get("stop_loss_p_mult", 0.0),
+            "take_profit_p_mult": self.params.get("take_profit_p_mult", 0.0),
+            "take_profit_abs": self.params.get("take_profit_abs", 0.0),
+        }
         return snap

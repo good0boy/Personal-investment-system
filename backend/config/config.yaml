@@ -117,6 +117,12 @@ strategy_defaults_v2:
   use_liquidity_gate: true      # 门0 流动性：amount_mean_20 ≥ 下限
   min_amount_mean_20: 50000000  # 门0 近20日日均成交额下限（元）
   realized_ret20_max: 0.30      # 退出：近20日累计涨幅 ≥ 此值（过度兑现）→ 卖出
+  # --- 止损/止盈（v2.1 新增）---
+  #   基准 p = |个股近5日累计涨跌幅| ÷ 5（近5日「日均」涨跌幅绝对值，**不是振幅**）。
+  #   p 是个股价、每只不同 → 阈值随个股近期波动自适应。0 = 关闭该规则。
+  stop_loss_p_mult: 0.0         # 毛亏 ≥ mult×p → 止损；0 = 关闭
+  take_profit_p_mult: 0.0       # 毛盈 ≥ mult×p → 止盈；0 = 关闭
+  take_profit_abs: 0.0          # 毛盈 ≥ 绝对阈值（0.06 = 6%）→ 止盈；0 = 关闭
   benchmark: "sh.000001"
 
 # ---------------- 数据源 ----------------
