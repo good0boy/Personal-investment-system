@@ -135,8 +135,9 @@
       <EChart :option="heatOption" height="380px" />
       <p class="note">
         怎么看：<b>看颜色块连成一片（高原），不要看孤立的深色格（尖峰）</b>。
-        相邻格颜色跳变越大，说明该参数越是在拟合噪声。带 <b>★</b> 的是推荐组合，
-        带 <b>⚠</b> 的是尖峰组合。
+        相邻格颜色跳变越大，说明该参数越是在拟合噪声。
+        每格是<b>格内所有组合（其余参数维度）的均值</b>；格内组数、最好/最差单组与
+        ★ 推荐 / ⚠ 尖峰标记看悬停提示，单个组合的标记见下方结果表。
       </p>
     </div>
 
@@ -482,11 +483,23 @@ const heatOption = computed<EChartsOption>(() => {
   const xIdx = new Map(xs.map((v, i) => [String(v), i]))
   const sIdx = new Map(srs.map((v, i) => [String(v), i]))
 
-  type Cell = [number, number, number]
-  const data: Cell[] = []
-  let vmin = Infinity
-  let vmax = -Infinity
-  const marks: Array<{ value: [number, number]; label: string }> = []
+  /**
+   * ⚠️ 必须按格聚合：网格是 止损×止盈×hold×pos 的笛卡尔积，
+   * 热力图只取其中两维 → 同一格子里堆着 15~30 个组合。
+   * 曾经把所有组合原样塞进 series.data —— ECharts 在同一格上叠画全部标签，
+   * 十几串百分比叠在一起就是主人标注的"显示模糊"；且最后画上的那个是任意组合，数值语义也是错的。
+   * 这里取**格内均值**（与规格书 §7.6/§7.9 的交叉表口径一致）。
+   */
+  interface CellAgg {
+    x: number
+    y: number
+    vals: number[]
+    hasPlateau: boolean
+    spikeCount: number
+    best: number | null
+    worst: number | null
+  }
+  const cells = new Map<string, CellAgg>()
 
   for (const it of items.value) {
     const v = numOf(it, objective.value)
@@ -495,13 +508,30 @@ const heatOption = computed<EChartsOption>(() => {
     if (x === undefined) continue
     const y = seriesAxis.value ? sIdx.get(String(it[seriesAxis.value])) : 0
     if (y === undefined) continue
-    data.push([x, y, v])
-    vmin = Math.min(vmin, v)
-    vmax = Math.max(vmax, v)
-    if (isPlateau(it)) marks.push({ value: [x, y], label: '★' })
-    else if (it.is_spike) marks.push({ value: [x, y], label: '⚠' })
+    const key = `${x}|${y}`
+    let c = cells.get(key)
+    if (!c) {
+      c = { x, y, vals: [], hasPlateau: false, spikeCount: 0, best: null, worst: null }
+      cells.set(key, c)
+    }
+    c.vals.push(v)
+    c.best = c.best === null ? v : Math.max(c.best, v)
+    c.worst = c.worst === null ? v : Math.min(c.worst, v)
+    if (isPlateau(it)) c.hasPlateau = true
+    if (it.is_spike) c.spikeCount += 1
   }
-  if (!data.length) return {}
+  if (!cells.size) return {}
+
+  type Cell = [number, number, number]
+  const data: Cell[] = []
+  let vmin = Infinity
+  let vmax = -Infinity
+  for (const c of cells.values()) {
+    const mean = c.vals.reduce((a, b) => a + b, 0) / c.vals.length
+    data.push([c.x, c.y, mean])
+    vmin = Math.min(vmin, mean)
+    vmax = Math.max(vmax, mean)
+  }
 
   // 全为正/全为负时 visualMap 会把 0 拉进范围 —— 用 0 参与边界，
   // 让「亏损格」与「盈利格」在颜色上真正分开（涨红跌绿）。
@@ -518,18 +548,17 @@ const heatOption = computed<EChartsOption>(() => {
         const [x, y, v] = item.value
         const xl = String(xs[x])
         const yl = seriesAxis.value ? `${seriesAxis.value}=${yLabels[y]}` : ''
-        const hit = items.value.find(
-          (it) =>
-            String(it[xAxis.value]) === xl &&
-            (!seriesAxis.value || String(it[seriesAxis.value]) === yLabels[y]),
-        )
-        const tag = hit?.is_spike ? ' ⚠ 尖峰' : isPlateau(hit) ? ' ★ 推荐' : ''
-        const nm = hit ? fmtPctSigned(numOf(hit, 'neighbor_mean')) : DASH
-        return (
-          `${xAxis.value}=${xl}${yl ? '｜' + yl : ''}${tag}<br/>` +
-          `${objectiveLabel.value}：<b>${fmtPctSigned(v)}</b><br/>` +
-          `邻域平均：${nm}`
-        )
+        const c = cells.get(`${x}|${y}`)
+        const lines = [`${xAxis.value}=${xl}${yl ? '｜' + yl : ''}`]
+        lines.push(`${objectiveLabel.value}（格内均值）：<b>${fmtPctSigned(v)}</b>`)
+        if (c && c.vals.length > 1) {
+          lines.push(
+            `共 ${c.vals.length} 组（其余维度组合）｜最好 ${fmtPctSigned(c.best)} ~ 最差 ${fmtPctSigned(c.worst)}`,
+          )
+        }
+        if (c?.hasPlateau) lines.push('★ 推荐组合（高原）在此格')
+        if (c && c.spikeCount > 0) lines.push(`⚠ 此格含 ${c.spikeCount} 个尖峰组合`)
+        return lines.join('<br/>')
       },
     },
     grid: { left: 74, right: 96, top: 22, bottom: 46 },
@@ -575,12 +604,12 @@ const heatOption = computed<EChartsOption>(() => {
         data,
         label: {
           show: true,
-          fontSize: 11,
+          fontSize: 12,
+          // ⚠️ 别加 textBorderWidth 描边光晕：12px 小字加 2px 白边会把数字糊成"描边字"。
+          //     聚合后每格只有一个标签，深底上深字实测可读，保持朴素。
           formatter: (p: unknown) => {
             const item = p as { value: [number, number, number] }
-            const mark = marks.find((m) => m.value[0] === item.value[0] && m.value[1] === item.value[1])
-            const pct = `${(item.value[2] * 100).toFixed(1)}%`
-            return mark ? `${mark.label}\n${pct}` : pct
+            return `${(item.value[2] * 100).toFixed(1)}%`
           },
         },
         emphasis: {
@@ -610,12 +639,18 @@ const lineOption = computed<EChartsOption>(() => {
     symbolSize: 7,
     lineStyle: { width: 2, color: colorOf(si) },
     itemStyle: { color: colorOf(si) },
+    // ⚠️ 与热力图同病同修：同一 (x, series) 点上有多个组合（hold×pos），
+    //    曾经 `find` 随便取一个画上去 —— 现在取均值，口径与热力图一致。
     data: xs.map((xv) => {
-      const hit = items.value.find(
-        (it) => String(it[xAxis.value]) === String(xv) && String(it[seriesAxis.value]) === String(sv),
-      )
-      const v = numOf(hit, objective.value)
-      return v === null ? null : Number((v * 100).toFixed(2))
+      const vals: number[] = []
+      for (const it of items.value) {
+        if (String(it[xAxis.value]) !== String(xv)) continue
+        if (seriesAxis.value && String(it[seriesAxis.value]) !== String(sv)) continue
+        const v = numOf(it, objective.value)
+        if (v !== null) vals.push(v)
+      }
+      if (!vals.length) return null
+      return Number(((vals.reduce((a, b) => a + b, 0) / vals.length) * 100).toFixed(2))
     }),
   }))
 

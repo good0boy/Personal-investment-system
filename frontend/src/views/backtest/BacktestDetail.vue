@@ -414,6 +414,109 @@
           <pre class="code-block config-json">{{ configJson }}</pre>
         </div>
       </el-tab-pane>
+
+      <!-- ========== 策略注释 ========== -->
+      <el-tab-pane label="策略注释" name="notes" lazy>
+        <div v-if="strategyNote" class="panel">
+          <div class="panel-title">
+            <span>设计逻辑 · {{ detail.strategy }}</span>
+            <span class="text-muted text-small">{{ strategyNote.nature }}</span>
+          </div>
+          <p class="note-oneliner">{{ strategyNote.oneLiner }}</p>
+          <p class="note-section">为什么这么设计</p>
+          <ul class="note-list">
+            <li v-for="(s, i) in strategyNote.designWhy" :key="`w${i}`">{{ s }}</li>
+          </ul>
+        </div>
+        <div v-else class="panel">
+          <p class="text-muted text-small">
+            这个策略（{{ detail?.strategy }}）还没有收录注释。参数含义见下方参数表；
+            规则依据以《策略规格说明书》为准。
+          </p>
+        </div>
+
+        <template v-if="strategyNote">
+          <div class="panel">
+            <div class="panel-title"><span>开仓规则</span></div>
+            <ul class="note-list">
+              <li v-for="(s, i) in strategyNote.entries" :key="`e${i}`">{{ s }}</li>
+            </ul>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title"><span>退出规则</span></div>
+            <ul class="note-list">
+              <li v-for="(s, i) in strategyNote.exits" :key="`x${i}`">{{ s }}</li>
+            </ul>
+          </div>
+
+          <div v-if="strategyNote.scoring?.length" class="panel">
+            <div class="panel-title"><span>打分与排序</span></div>
+            <ul class="note-list">
+              <li v-for="(s, i) in strategyNote.scoring" :key="`s${i}`">{{ s }}</li>
+            </ul>
+          </div>
+        </template>
+
+        <div class="panel">
+          <div class="panel-title">
+            <span>运行标识（tag）解读</span>
+            <span class="text-muted text-small">
+              tag 是跑回测时手工敲的标记，这里按项目命名惯例逐词转译 —— 最终以配置快照为准
+            </span>
+          </div>
+          <div v-if="tagTokens.length" class="tag-decode">
+            <div v-for="t in tagTokens" :key="t.token + t.meaning" class="tag-token">
+              <span class="mono token">{{ t.token }}</span>
+              <span class="meaning">{{ t.meaning }}</span>
+            </div>
+          </div>
+          <p v-else class="text-muted text-small">这个 run 没有打 tag（tag 为空）。</p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">
+            <span>参数配置详情</span>
+            <span class="text-muted text-small">「本次值」取自该 run 的配置快照（config.json）；含义依据规格书</span>
+          </div>
+          <el-table
+            :data="paramRows"
+            size="small"
+            stripe
+            max-height="560px"
+            empty-text="配置快照里没有参数"
+          >
+            <el-table-column label="参数" width="220">
+              <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
+            </el-table-column>
+            <el-table-column label="本次值" width="140" align="right">
+              <template #default="{ row }">
+                <span class="mono param-val">{{ row.value }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="含义" min-width="460">
+              <template #default="{ row }">
+                <template v-if="row.documented">
+                  <b class="param-label">{{ row.label }}</b>
+                  <span class="param-desc">{{ row.desc }}</span>
+                </template>
+                <span v-else class="text-muted">（暂无注释 —— 见规格书或指标词典）</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div v-if="strategyNote" class="panel">
+          <div class="panel-title">
+            <span>必须知道的结论与警告</span>
+            <span class="text-muted text-small">结论性内容可能随后续实验更新，以规格书最新版为准</span>
+          </div>
+          <ul class="note-list caveat">
+            <li v-for="(s, i) in strategyNote.caveats" :key="`c${i}`">{{ s }}</li>
+          </ul>
+          <p class="spec-doc">规则唯一依据：{{ strategyNote.specDoc }}；本页注释与规格书冲突时，以规格书为准。</p>
+        </div>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -425,6 +528,7 @@ import { ElMessage } from 'element-plus'
 import type { EChartsOption } from 'echarts'
 import EChart from '@/components/EChart.vue'
 import { getEquity, getOrders, getRunDetail, getRuns, getTrades } from '@/api/backtest'
+import { buildParamRows, decodeTag, extractParams, STRATEGY_NOTES } from './strategyNotes'
 import type {
   BacktestRunDetail,
   BacktestRunSummary,
@@ -850,6 +954,18 @@ const monthlyOption = computed<EChartsOption>(() => {
 const configJson = computed(() => JSON.stringify(detail.value?.config ?? {}, null, 2))
 
 // ======================================================================
+// 策略注释（tag 解读 + 参数词典 —— 数据在 strategyNotes.ts）
+// ======================================================================
+const strategyNote = computed(() => {
+  const s = detail.value?.strategy
+  return (s && STRATEGY_NOTES[s]) || null
+})
+
+const tagTokens = computed(() => decodeTag(detail.value?.tag))
+
+const paramRows = computed(() => buildParamRows(extractParams(detail.value?.config)))
+
+// ======================================================================
 // 交易记录
 // ======================================================================
 const tradeQuery = reactive<{
@@ -1164,5 +1280,82 @@ onBeforeUnmount(() => window.removeEventListener('resize', syncTableHeights))
 
 .inner-tabs :deep(.el-tabs__header) {
   margin-bottom: 14px;
+}
+
+/* ---------- 策略注释 ---------- */
+.note-oneliner {
+  margin: 0;
+  padding: 10px 14px;
+  background: #f7f8fa;
+  border-left: 3px solid var(--color-up, #d03050);
+  border-radius: 0 7px 7px 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.note-section {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #4a4f57;
+}
+
+.note-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: #3c4148;
+}
+
+.note-list.caveat li + li {
+  margin-top: 4px;
+}
+
+.tag-decode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tag-token {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.tag-token .token {
+  flex: 0 0 110px;
+  background: #eef0f3;
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  text-align: center;
+  color: #1f2329;
+}
+
+.tag-token .meaning {
+  color: #3c4148;
+}
+
+.param-val {
+  color: #1f2329;
+}
+
+.param-label {
+  font-weight: 500;
+  margin-right: 8px;
+}
+
+.param-desc {
+  color: #5a6169;
+}
+
+.spec-doc {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  color: #8a8f99;
 }
 </style>
