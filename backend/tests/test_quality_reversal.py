@@ -493,7 +493,7 @@ def test_registered_and_snapshot_records_v2_contract():
 
     inst = QualityReversalStrategy()
     assert inst.name == "quality_reversal"
-    assert inst.version == "2.2"
+    assert inst.version == "2.3"
     # 默认参数来自独立配置节 strategy_defaults_v2，不是 v1.6 的 strategy_defaults
     assert inst.params["max_positions"] == 10
     assert inst.params["max_weight_per_stock"] == 0.10
@@ -505,7 +505,7 @@ def test_registered_and_snapshot_records_v2_contract():
     assert inst.params["take_profit_abs"] == 0.0
 
     snap = inst.config_snapshot()
-    assert "v2.2" in snap["rules_version"]
+    assert "v2.3" in snap["rules_version"]
     assert snap["buy_fill_rule"] == "next_open"
     assert snap["sell_fill_rule"] == "same_close"
     assert snap["gates"]["quality"] is True
@@ -517,3 +517,40 @@ def test_registered_and_snapshot_records_v2_contract():
     assert snap["exit_p_rules"]["p_window"] == 5
     assert snap["exit_p_rules"]["p_requires_full_tradable_window"] is True
     assert snap["exit_p_rules"]["stop_loss_p_mult"] == 0.0
+
+
+# ======================================================================
+# 门2c · MA 上行确认（v2.3，实验参数）
+# ======================================================================
+def test_ma_rise_gate_off_by_default(tmp_path, monkeypatch):
+    """默认 0 = 关闭：MA 上行与下行的票都能买（等价 v2.2 行为）。"""
+    _install(tmp_path, monkeypatch, drift={S0: 0.01, S2: -0.01})
+    _install_factors(_carrier())
+
+    res = _engine(_params(reversal_pct=0.75)).run()
+
+    touched = _touched(res)
+    assert S0 in touched and S2 in touched, "门2c 关闭时不应裁人"
+
+
+def test_ma_rise_gate_blocks_falling_ma3(tmp_path, monkeypatch):
+    """★ 门2c（w=3）：MA3(t) >= MA3(t-1) 才可买 —— MA 下行的票被剔除。"""
+    _install(tmp_path, monkeypatch, drift={S0: 0.01, S2: -0.01})
+    _install_factors(_carrier())
+
+    res = _engine(_params(reversal_pct=0.75, ma_rise_confirm_window=3)).run()
+
+    touched = _touched(res)
+    assert S0 in touched, "MA3 上行的应保留"
+    assert S2 not in touched, "MA3 下行的应被剔除"
+
+
+def test_ma_rise_gate_window5_same_direction(tmp_path, monkeypatch):
+    """★ 门2c（w=5）：同方向判定对 5 日均线同样成立。"""
+    _install(tmp_path, monkeypatch, drift={S0: 0.01, S2: -0.01})
+    _install_factors(_carrier())
+
+    res = _engine(_params(reversal_pct=0.75, ma_rise_confirm_window=5)).run()
+
+    touched = _touched(res)
+    assert S0 in touched and S2 not in touched

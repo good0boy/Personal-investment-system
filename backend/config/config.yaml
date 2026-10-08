@@ -116,6 +116,7 @@ strategy_defaults_v2:
   use_lowturn_gate: true        # 门4 低换手：turnover_20 ≤ 截面中位
   use_liquidity_gate: true      # 门0 流动性：amount_mean_20 ≥ 下限
   min_amount_mean_20: 50000000  # 门0 近20日日均成交额下限（元）
+  ma_rise_confirm_window: 0     # 门2c（v2.3，实验参数）：个股 MA_w(t)≥MA_w(t-1) 才可买；0=关闭，可取 3/5/10
   realized_ret20_max: 0.30      # 退出：近20日累计涨幅 ≥ 此值（过度兑现）→ 卖出
   # --- 止损/止盈（v2.1 新增）---
   #   基准 p = |个股近5日累计涨跌幅| ÷ 5（近5日「日均」涨跌幅绝对值，**不是振幅**）。

@@ -248,6 +248,8 @@ class StrategyDefaultsV2(BaseModel):
     # --- 门 0 · 流动性下限 ---
     use_liquidity_gate: bool = True
     min_amount_mean_20: float = 5.0e7       # 近 20 日日均成交额下限（元）
+    # v2.3：个股 MA 上行确认（门2c）。0 = 关闭；3/5/10 = 个股 MA_w(t) >= MA_w(t-1) 才可买
+    ma_rise_confirm_window: int = 0
     # --- 退出：过度兑现 ---
     realized_ret20_max: float = 0.30        # 近 20 日累计涨幅 ≥ 此值 → 反转已过度兑现，卖出
     # --- 退出：止损 / 止盈（v2.1 新增）-------------------------------------------------

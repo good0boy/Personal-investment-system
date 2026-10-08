@@ -155,7 +155,7 @@ class QualityReversalStrategy(BaseStrategy):
     """中频「质量反转」选股（v2.0）。"""
 
     name = "quality_reversal"
-    version = "2.2"
+    version = "2.3"
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         super().__init__(params)
@@ -176,6 +176,8 @@ class QualityReversalStrategy(BaseStrategy):
             "use_lowturn_gate": v2.use_lowturn_gate,
             "use_liquidity_gate": v2.use_liquidity_gate,
             "min_amount_mean_20": v2.min_amount_mean_20,
+            # v2.3：个股 MA 上行确认（0 = 关闭；3/5/10 = MA_w(t) >= MA_w(t-1) 才可买）
+            "ma_rise_confirm_window": v2.ma_rise_confirm_window,
             "realized_ret20_max": v2.realized_ret20_max,
             # --- v2.1 新增：止损 / 止盈（阈值基准 p，0 = 关闭）---
             "stop_loss_p_mult": v2.stop_loss_p_mult,
@@ -387,7 +389,7 @@ class QualityReversalStrategy(BaseStrategy):
         rows = {name: self._factor_row(name, day, pool) for name in FACTOR_SPECS}
 
         # ---- 逐门裁剪（因子不可用 → 该门降级，绝不静默）----
-        keep = self._apply_gates(ctx, day, pool, rows)
+        keep = self._apply_gates(ctx, day, di, pool, rows)
         n_after_gates = int(keep.sum())
         if n_after_gates == 0:
             return
@@ -425,8 +427,38 @@ class QualityReversalStrategy(BaseStrategy):
             ctx.account.order_buy(symbol, target_amount, reason="quality_reversal")
             bought += 1
 
+    def _ma_rise_mask(
+        self, ctx: StrategyContext, di: int, pool: list[str], window: int
+    ) -> pd.Series | None:
+        """门2c 的判定序列：**MA_w(t) − MA_w(t-1)**（≥ 0 视为上行）。
+
+        - 口径：后复权收盘价的简单均线；判定用到的 w+1 根（两组窗口合起来）
+          必须**全部可交易**（trade_status==1）且价格有限，否则该股为 NaN → 不通过（不猜）。
+        - 历史不足（`di - window < 0`）→ 返回 None → 该门**降级不裁剪**（与其它门同语义）。
+        """
+        m = ctx.market
+        if di - window < 0:
+            return None
+        si = np.array([m.symbol_index.get(s, -1) for s in pool], dtype=int)
+        valid = si >= 0
+        vals = np.full(len(pool), np.nan)
+        if valid.any():
+            cols = si[valid]
+            win_t = m.close[di - window + 1: di + 1][:, cols]      # MA_w(t)
+            win_p = m.close[di - window: di][:, cols]              # MA_w(t-1)
+            tr = m.trade_status[di - window: di + 1][:, cols]
+            ok = (
+                np.isfinite(win_t).all(axis=0)
+                & np.isfinite(win_p).all(axis=0)
+                & (tr == 1).all(axis=0)
+            )
+            diff = win_t.mean(axis=0) - win_p.mean(axis=0)
+            vals[valid] = np.where(ok, diff, np.nan)
+        return pd.Series(vals, index=pd.Index(pool))
+
     def _apply_gates(
-        self, ctx: StrategyContext, day: str, pool: list[str], rows: dict[str, pd.Series | None]
+        self, ctx: StrategyContext, day: str, di: int, pool: list[str],
+        rows: dict[str, pd.Series | None],
     ) -> pd.Series:
         """返回 pool 上的布尔掩码（True = 通过全部门）。
 
@@ -460,6 +492,11 @@ class QualityReversalStrategy(BaseStrategy):
         _gate("reversal", rows["ret_50"], lambda r: r.rank(pct=True) <= rev_pct)
         # 门2b · 排除脉冲股：近 20 日最大单日涨幅 ≤ 上限
         _gate("pulse", rows["max_ret_20"], lambda r: r <= float(self.params["max_ret_20_max"]))
+        # 门2c · MA 上行确认（v2.3 可选）：个股 MA_w(t) >= MA_w(t-1) 才可买；0 = 关闭
+        ma_w = int(self.params.get("ma_rise_confirm_window", 0) or 0)
+        if ma_w > 0:
+            _gate("ma_rise", self._ma_rise_mask(ctx, di, pool, ma_w),
+                  lambda r: r >= 0.0)
         # 门3 · 质量门：成长为正
         if bool(self.params["use_quality_gate"]):
             prof, rev = rows["profit_yoy"], rows["revenue_yoy"]
@@ -491,7 +528,7 @@ class QualityReversalStrategy(BaseStrategy):
     # ==================================================================
     def config_snapshot(self) -> dict[str, Any]:
         snap = super().config_snapshot()
-        snap["rules_version"] = "策略规格说明书-v2.0-中频质量反转.md v2.2"
+        snap["rules_version"] = "策略规格说明书-v2.0-中频质量反转.md v2.3"
         snap["description"] = (
             "中频「质量反转」：买温和弱势(反转)+基本面成长+低波动低换手，"
             "每 rebalance_every 个交易日建仓、持有 hold_days_max 个交易日"
@@ -507,6 +544,7 @@ class QualityReversalStrategy(BaseStrategy):
             "lowturn": bool(self.params["use_lowturn_gate"]),
             "liquidity": bool(self.params["use_liquidity_gate"]),
             "min_amount_mean_20": self.params["min_amount_mean_20"],
+            "ma_rise_confirm_window": int(self.params.get("ma_rise_confirm_window", 0) or 0),
         }
         snap["score_dims"] = dict(SCORE_DIMS)
         snap["realized_ret20_max"] = self.params["realized_ret20_max"]
