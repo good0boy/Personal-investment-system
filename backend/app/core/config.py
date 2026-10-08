@@ -337,6 +337,26 @@ class PaperConfig(BaseModel):
     init_cash: float = 1_000_000
 
 
+class DataSyncConfig(BaseModel):
+    """本地数据同步（每日跑批 / 启动补跑共用的「把本地数据补到最新」）。
+
+    背景（2026-10-08 审计）：此前就绪探针只有 2 个标的，2026-09-18 一次中断的
+    回补留下 ~555 只的部分数据，探针恰好在其中 → 每晚都判「就绪」不回补，
+    09-18~09-30 的缺口挂了两周。覆盖率闸门就是防这个的。
+    """
+
+    #: 当日有个股 K 线的数量下限（全市场 ~4570 只的 65%）。低于它 = 行情未就绪。
+    min_daily_symbols: int = 3000
+    #: 行情就绪后是否同步股票池快照（tools.backfill_universe，秒级）
+    sync_universe: bool = True
+    #: 行情就绪后是否重算因子（factors.calc，约 10~20 分钟）。
+    #: ★ 必须在净值重算之前 —— 策略打分读的是 factor/*.parquet，
+    #:   行情新了、因子旧了 = 用旧信号跑新行情。
+    sync_factors: bool = True
+    #: 基本面原始数据陈旧告警阈值（天）。⚠️ 不自动补：backfill_fundamental 全量约 9 小时。
+    fundamental_stale_days: int = 10
+
+
 class AlertConfig(BaseModel):
     enabled: bool = False
     rate_limit_per_minute: int = 20
@@ -367,6 +387,7 @@ class YamlSettings(BaseModel):
     datasource: DatasourceConfig = Field(default_factory=DatasourceConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     paper: PaperConfig = Field(default_factory=PaperConfig)
+    data_sync: DataSyncConfig = Field(default_factory=DataSyncConfig)
     alert: AlertConfig = Field(default_factory=AlertConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
@@ -447,6 +468,10 @@ class Settings:
     @property
     def paper(self) -> PaperConfig:
         return self.yaml.paper
+
+    @property
+    def data_sync(self) -> DataSyncConfig:
+        return self.yaml.data_sync
 
     @property
     def alert(self) -> AlertConfig:

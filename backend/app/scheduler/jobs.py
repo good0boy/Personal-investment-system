@@ -239,7 +239,57 @@ def app_bootstrap_job(run_date: str, *, trigger_type: str = "manual") -> dict[st
         }
     )
 
+    # 3) 数据新鲜度告警（**不阻塞启动** —— 实际补数由 paper_daily 的
+    #    覆盖率闸门 + catch_up 兜底；这里只把"数据旧了"大声说出来）
+    _warn_stale_data()
+
     return {"actions": actions, "calendar": calendar.stats()}
+
+
+def _warn_stale_data() -> None:
+    """启动时的数据新鲜度告警：行情落后日历 / 基本面陈旧（2026-10-08 新增）。
+
+    为什么只告警不补：启动路径要快（回补 30~50 分钟会让浏览器长时间
+    "拒绝连接"，见 run_startup_catch_up 的警告）；真正的补数由
+    paper_daily 的 `sync_all`（覆盖率闸门驱动）+ 启动补跑负责。
+    """
+    from app.core.paths import QUOTE_DAILY_DIR  # noqa: PLC0415
+    from app.services import data_store  # noqa: PLC0415
+    from app.services.data_sync_service import (  # noqa: PLC0415
+        READY_PROBE_SYMBOLS,
+        fundamental_staleness,
+    )
+
+    last_trade = calendar.stats().get("last_date")
+    probe = READY_PROBE_SYMBOLS[0]
+    probe_path = QUOTE_DAILY_DIR / f"{probe}.parquet"
+    if last_trade and probe_path.exists():
+        try:
+            df = data_store.query_duck(
+                f"SELECT max(date) AS d FROM read_parquet('{probe_path.as_posix()}')"
+            )
+            last_quote = str(df["d"].iloc[0])[:10] if not df.empty else None
+            if last_quote and last_quote < last_trade:
+                logger.warning(
+                    f"[bootstrap] 行情落后日历：最新 {last_quote} < {last_trade}。"
+                    f"将由 paper_daily 的覆盖率闸门 + 启动补跑自动回补；"
+                    f"也可手动执行 python -m tools.backfill_quotes --incremental"
+                )
+        except Exception as exc:
+            logger.warning(f"[bootstrap] 行情新鲜度检查失败（忽略）：{exc!r}")
+
+    fund = fundamental_staleness()
+    stale_days = int(settings.data_sync.fundamental_stale_days)
+    if fund.get("available") and fund.get("last_date"):
+        age = (date.today() - date.fromisoformat(str(fund["last_date"]))).days
+        if age > stale_days:
+            logger.warning(
+                f"[bootstrap] 基本面数据已 {age} 天未更新（> 阈值 {stale_days}，最新 "
+                f"{fund['last_date']}）。⚠️ 不自动补（全量约 9 小时）；"
+                f"季报披露期建议手动执行 python -m tools.backfill_fundamental"
+            )
+    elif not fund.get("available"):
+        logger.warning(f"[bootstrap] 基本面数据不可用：{fund.get('reason')}")
 
 
 # ======================================================================

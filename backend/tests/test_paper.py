@@ -18,6 +18,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.core.config import settings  # noqa: E402
 from app.core.errors import DataNotReadyError, PaperError  # noqa: E402
 from app.repos import db as db_module  # noqa: E402
 from app.repos import meta_repo  # noqa: E402
@@ -65,6 +66,25 @@ def paper_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quote_dir: Path) 
     paper_dir = tmp_path / "paper"
     monkeypatch.setattr(paper_service, "PAPER_DIR", paper_dir)
     monkeypatch.setattr(paper_service, "PAPER_START_DATE", "2024-01-01")
+
+    # 4) 数据同步编排必须隔离：单测绝不能真去跑 baostock 子进程。
+    #    三个子步骤打成"已跳过"；覆盖率阈值降到 1（夹具只有几只标的，
+    #    否则会被 2026-10-08 新增的全市场覆盖率闸门误拦 —— 那是生产语义）。
+    import app.services.data_sync_service as data_sync_module
+
+    monkeypatch.setattr(
+        data_sync_module, "sync_quotes_incremental",
+        lambda: {"step": "行情增量回补", "ok": True, "skipped": True, "reason": "test"},
+    )
+    monkeypatch.setattr(
+        data_sync_module, "sync_universe",
+        lambda run_date: {"step": f"股票池快照 {run_date}", "ok": True, "skipped": True, "reason": "test"},
+    )
+    monkeypatch.setattr(
+        data_sync_module, "sync_factors",
+        lambda: {"step": "因子重算", "ok": True, "skipped": True, "reason": "test"},
+    )
+    monkeypatch.setattr(settings.data_sync, "min_daily_symbols", 1)
     return paper_dir
 
 

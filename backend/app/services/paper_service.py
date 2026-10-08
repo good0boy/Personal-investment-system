@@ -26,8 +26,9 @@
   增量模式的遗留设计；全量重算下再用它们就是两份真相）。
 
 每日跑批流程（23:00，见 `scheduler/jobs.py`）：
-    1. `tools.backfill_quotes --incremental` 增量补当日行情（尽力而为）；
-    2. **就绪校验**（唯一闸门）：探针标的当日无 K 线 → `DataNotReadyError`，
+    1. `data_sync_service.sync_all`：行情增量回补（覆盖率闸门驱动，尽力而为）
+       → 股票池快照 → **因子重算**（策略打分读 factor/*.parquet，必须先于净值重算）；
+    2. **就绪校验**（唯一闸门，探针 + 全市场覆盖率）：不就绪 → `DataNotReadyError`，
        job 记 failed，等次日启动补跑兜底（主人拍板的保底方案）；
     3. 引擎全量重算 起始日 → run_date；
     4. 覆盖落盘 + 更新 `paper_account.last_run_date`。
@@ -38,8 +39,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 import threading
 import time
 from datetime import datetime
@@ -49,7 +48,7 @@ from typing import Any
 import pandas as pd
 
 from app.core.config import settings
-from app.core.errors import DataNotReadyError, NotFoundError, PaperError
+from app.core.errors import NotFoundError, PaperError
 from app.core.jsonutils import json_safe
 from app.core.logging import logger
 from app.core.paths import PAPER_DIR
@@ -57,6 +56,12 @@ from app.repos import meta_repo
 from app.services import data_store
 from app.services import metrics as metrics_mod
 from app.services.calendar_service import calendar
+from app.services.data_sync_service import (  # noqa: F401 - 再导出保持旧 API 兼容
+    READY_PROBE_SYMBOLS,
+    assert_quotes_ready,
+    sync_all,
+    sync_quotes_incremental,
+)
 from strategies.base import (
     ORDER_COLUMNS,
     POSITION_COLUMNS,
@@ -73,16 +78,12 @@ PAPER_START_DATE = "2025-01-01"
 #: 默认策略与参数来源：`paper_account.param_json`（空 = 策略默认 = 规格 v1.2）
 DEFAULT_STRATEGY = "momentum"
 
-#: 行情就绪探针：流动性最好的个股 + 择时闸门的指数信号源。
-#: 两个都在 run_date 有 K 线才认为数据源已更新（baostock 日线一般 17:30~19:00 就绪）。
-READY_PROBE_SYMBOLS: tuple[str, ...] = ("sh.600519", "sh.000001")
+# 就绪探针 / 行情回补 / 就绪校验已上收到 `data_sync_service`（探针 + 全市场覆盖率双判据），
+# 本模块经顶部 import 再导出 READY_PROBE_SYMBOLS / sync_quotes_incremental / assert_quotes_ready。
 
 #: 进程内互斥锁：API 手动触发与 APScheduler cron 可能并发（两者是不同的
 #: job id，APScheduler 的 max_instances 管不到跨 id），锁是最终防线。
 _RUN_LOCK = threading.Lock()
-
-#: 增量回补子进程的超时上限（4792 只 × 单只一请求，实测约 30~50 分钟）
-_SYNC_QUOTES_TIMEOUT = 90 * 60
 
 
 # ======================================================================
@@ -120,72 +121,6 @@ _require_account = require_account  # 模块内别名（历史书写习惯，语
 
 
 # ======================================================================
-# 行情回补与就绪校验
-# ======================================================================
-def sync_quotes_incremental() -> dict[str, Any]:
-    """增量回补行情（子进程跑 `tools.backfill_quotes --incremental`）。
-
-    为什么用子进程：① baostock 登录是进程级单例，回补 30~50 分钟会
-    长期占据会话，与 catalog 自检等其它 baostock 调用互踢；② 隔离失败
-    —— 回补是"尽力而为"的前置步骤，**就绪校验才是唯一闸门**，
-    回补失败/超时不应让跑批直接失败，而是交给就绪校验去判。
-    """
-    t0 = time.perf_counter()
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "tools.backfill_quotes", "--incremental"],
-            cwd=str(Path(__file__).resolve().parents[2]),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_SYNC_QUOTES_TIMEOUT,
-            check=False,
-        )
-        ok = proc.returncode == 0
-        tail = (proc.stdout or "").strip().splitlines()[-3:]
-        return {
-            "ok": ok,
-            "cost_seconds": round(time.perf_counter() - t0, 1),
-            "returncode": proc.returncode,
-            "tail": tail,
-        }
-    except subprocess.TimeoutExpired:
-        logger.warning(f"[paper] 增量回补超时（>{_SYNC_QUOTES_TIMEOUT}s），继续就绪校验")
-        return {"ok": False, "cost_seconds": round(time.perf_counter() - t0, 1), "timeout": True}
-    except Exception as exc:
-        logger.warning(f"[paper] 增量回补异常，继续就绪校验：{exc!r}")
-        return {"ok": False, "cost_seconds": round(time.perf_counter() - t0, 1), "error": repr(exc)}
-
-
-def assert_quotes_ready(run_date: str) -> None:
-    """就绪校验（唯一闸门）：探针标的在 run_date 必须有 K 线。
-
-    指数与个股都查 —— 指数是择时闸门的信号源，缺了它引擎能跑但
-    闸门会静默失效（比报错更危险）。
-    """
-    missing: list[str] = []
-    for sym in READY_PROBE_SYMBOLS:
-        is_index = sym == "sh.000001"
-        try:
-            df = data_store.read_quotes(
-                sym, run_date, run_date, is_index=is_index, columns=["date"]
-            )
-        except Exception as exc:
-            logger.warning(f"[paper] 探针 {sym} 读取失败：{exc!r}")
-            missing.append(sym)
-            continue
-        if df.empty:
-            missing.append(sym)
-    if missing:
-        raise DataNotReadyError(
-            f"行情未就绪：{'、'.join(missing)} 在 {run_date} 没有日线数据。"
-            f"数据源（baostock）通常在 17:30~19:00 更新完毕；"
-            f"本次跑批记录为失败，次日启动补跑会自动补上（保底方案）。"
-        )
-
-
-# ======================================================================
 # 跑批（核心）
 # ======================================================================
 def last_nav_date(account_id: str) -> str | None:
@@ -212,8 +147,8 @@ def run_paper_day(
 ) -> dict[str, Any]:
     """把模拟盘净值更新到 `run_date`（全量重算，幂等）。
 
-    数据流：先就绪校验（秒级）→ 未就绪才增量回补（约 30 分钟）→
-    再校验一次 → 引擎重算 → 落盘 → 派发交易提醒。
+    数据流：`sync_all`（行情→快照→因子，覆盖率闸门驱动，缺口夜约 30~80 分钟）
+    → 就绪校验（唯一闸门）→ 引擎重算 → 落盘 → 派发交易提醒。
 
     Args:
         run_date: 逻辑运行日（净值终点），来自日历的最新已发生交易日。
@@ -241,15 +176,14 @@ def run_paper_day(
         if done is not None and done >= run_date:
             return {"skipped": True, "reason": f"净值已更新至 {done}（不早于 {run_date}）"}
 
-        # 数据就绪（唯一闸门）：先校验，缺了才回补，回补后再校验。
-        try:
-            assert_quotes_ready(run_date)
-        except DataNotReadyError:
-            logger.info(f"[paper] {run_date} 行情未就绪，先增量回补再校验")
-            sync_result = sync_quotes_incremental()
-            if not sync_result.get("ok"):
-                logger.warning(f"[paper] 增量回补未成功（继续校验）：{sync_result}")
-            assert_quotes_ready(run_date)  # 仍缺 → DataNotReadyError 抛给 job 记 failed
+        # 数据同步（行情 → 股票池快照 → 因子）→ 最终就绪校验（唯一闸门）。
+        # sync_all 不抛异常（单步失败记进结果）；此处仍不就绪 → DataNotReadyError
+        # 抛给 job 记 failed，次日启动补跑会自动重试（catch_up 兜底）。
+        sync_result = sync_all(run_date)
+        failed = [s for s in sync_result.get("steps", []) if not s.get("ok")]
+        if failed:
+            logger.warning(f"[paper] {run_date} 数据同步有失败步骤（继续校验）：{failed}")
+        assert_quotes_ready(run_date)
 
         strategy_name = account.get("strategy") or DEFAULT_STRATEGY
         try:
