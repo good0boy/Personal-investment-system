@@ -78,6 +78,9 @@ PAPER_START_DATE = "2025-01-01"
 #: 默认策略与参数来源：`paper_account.param_json`（空 = 策略默认 = 规格 v1.2）
 DEFAULT_STRATEGY = "momentum"
 
+#: 「最近交易」展示上限（已平仓 ∪ 持仓中，按买入日降序）
+RECENT_TRADES_LIMIT = 100
+
 # 就绪探针 / 行情回补 / 就绪校验已上收到 `data_sync_service`（探针 + 全市场覆盖率双判据），
 # 本模块经顶部 import 再导出 READY_PROBE_SYMBOLS / sync_quotes_incremental / assert_quotes_ready。
 
@@ -546,6 +549,20 @@ def read_overview(account_id: str) -> dict[str, Any]:
     cfg = overview["config"]
     last = nav_df.iloc[-1]
 
+    # ★ 顶部「当前净值」卡与净值曲线保持一致（主人 2026-10-09）：
+    # 账户行没有 nav 列（历史设计），此前前端显示为空。一律以净值曲线
+    # 最后一点为准 —— 最新交易日未跑批时它就是前一日的净值，跑批后
+    # 自动变为最新值。附 nav_date 让前端能标注净值所属交易日。
+    account = {
+        **account,
+        "nav": float(last["nav"]),
+        "cash": float(last["cash"]),
+        "total_asset": float(last["total_asset"]),
+        "position_count": int(last.get("position_count") or 0),
+        "drawdown": float(last.get("drawdown") or 0.0),
+        "nav_date": str(last["date"])[:10],
+    }
+
     positions_df = overview["positions"]
     latest_pos: list[dict[str, Any]] = []
     if not positions_df.empty:
@@ -556,9 +573,30 @@ def read_overview(account_id: str) -> dict[str, Any]:
         )
 
     trades_df = overview["trades"]
-    recent_trades: list[dict[str, Any]] = []
-    if not trades_df.empty:
-        recent_trades = _records_clean(trades_df.tail(50).iloc[::-1])
+    # ★ 最近交易 = 已平仓记录 ∪ 当前持仓（主人 2026-10-09）：
+    #   持仓中的票卖出日/卖出原因/盈亏留空，待卖出后由平仓记录自然接替
+    #   （trades 只记已平仓，同一 (symbol, entry_date) 不会两边重复）。
+    #   按买入日降序，最多 100 笔。
+    closed_rows = _records_clean(trades_df) if not trades_df.empty else []
+    open_rows: list[dict[str, Any]] = [
+        {
+            "symbol": r["symbol"],
+            "entry_date": r["entry_date"],
+            "entry_price": r.get("entry_price"),
+            "shares": r["shares"],
+            "exit_date": None,
+            "net_pnl": None,
+            "net_return": None,
+            "exit_reason": None,
+            "holding": True,
+        }
+        for r in latest_pos
+    ]
+    recent_trades = sorted(
+        closed_rows + open_rows,
+        key=lambda r: str(r.get("entry_date") or ""),   # ISO 字符串序 = 时间序
+        reverse=True,
+    )[:RECENT_TRADES_LIMIT]
 
     # 延迟 import：scheduler → jobs → 本模块，顶部导入会成环
     from app.scheduler.scheduler import list_jobs  # noqa: PLC0415

@@ -931,11 +931,14 @@ export interface PaperAccountSummary {
   start_date: string | null
   last_run_date: string | null
   created_at: string
-  /** 以下为列表接口附加的最新净值摘要（无产物时缺省） */
+  /** 以下为列表/详情接口附加的最新净值摘要（无产物时缺省） */
   data_as_of?: string
   nav?: number
   drawdown?: number
   position_count?: number
+  /** 详情接口：与净值曲线最后一点一致（当前净值卡数据源） */
+  total_asset?: number
+  nav_date?: string
 }
 
 /** 净值曲线采样点 */

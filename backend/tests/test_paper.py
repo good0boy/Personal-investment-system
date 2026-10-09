@@ -278,3 +278,77 @@ def test_paper_strategy_switch_invalidates_artifacts(paper_env: Path, monkeypatc
 
     leftovers = [f.name for f in pdir.iterdir() if f.name != "placeholder"]
     assert leftovers == [], f"旧策略产物应全部作废，残留：{leftovers}"
+
+
+@pytest.mark.usefixtures("_close_db_after")
+def test_read_overview_nav_consistent_and_open_positions(paper_env: Path) -> None:
+    """★ 两项前端契约（主人 2026-10-09）：
+
+    1. 「当前净值」卡 = 净值曲线最后一点（账户行没有 nav 列，此前显示为空）；
+       最新交易日未跑批时自然显示前一日净值 —— 与曲线永远一致。
+    2. 「最近交易」= 已平仓 ∪ 当前持仓（持仓行卖出日/原因/盈亏为空），
+       按买入日降序，最多 100 笔。
+    """
+    paper_service.ensure_default_account()
+    d = paper_env / "default"
+    d.mkdir(parents=True, exist_ok=True)
+
+    nav = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-06-27", "2024-06-28"]),
+            "cash": [90.0, 80.0],
+            "market_value": [10.0, 20.0],
+            "total_asset": [100.0, 100.0],
+            "position_count": [1, 1],
+            "nav": [1.05, 1.10],
+            "drawdown": [0.0, -0.02],
+            "benchmark_nav": [1.0, 1.01],
+        }
+    )
+    data_store.write_parquet(nav, d / "nav.parquet", allow_empty=True)
+
+    trades = pd.DataFrame(
+        {
+            "symbol": ["sh.600000", "sh.600001"],
+            "entry_date": pd.to_datetime(["2024-06-20", "2024-06-25"]),
+            "entry_price": [10.0, 11.0],
+            "shares": [100, 200],
+            "exit_date": pd.to_datetime(["2024-06-26", "2024-06-27"]),
+            "net_pnl": [5.0, -3.0],
+            "net_return": [0.05, -0.03],
+            "exit_reason": ["time_stop", "time_stop"],
+        }
+    )
+    data_store.write_parquet(trades, d / "trades.parquet", allow_empty=True)
+
+    positions = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-06-28"]),
+            "symbol": ["sh.600002"],
+            "shares": [300],
+            "entry_date": pd.to_datetime(["2024-06-27"]),   # 比两笔平仓都新
+            "entry_price": [12.0],
+            "close": [12.5],
+            "market_value": [3750.0],
+            "unrealized_pnl": [150.0],
+            "hold_days": [1],
+        }
+    )
+    data_store.write_parquet(positions, d / "positions.parquet", allow_empty=True)
+    (d / "config.json").write_text("{}", encoding="utf-8")
+
+    ov = paper_service.read_overview("default")
+
+    # 1) 当前净值 = 曲线最后一点
+    assert ov["empty"] is False
+    assert ov["account"]["nav"] == 1.10
+    assert ov["account"]["nav_date"] == "2024-06-28"
+    assert ov["account"]["total_asset"] == 100.0
+
+    # 2) 最近交易：2 平仓 + 1 持仓，按买入日降序，持仓行卖出字段为空
+    rt = ov["recent_trades"]
+    assert [r["symbol"] for r in rt] == ["sh.600002", "sh.600001", "sh.600000"]
+    head = rt[0]
+    assert head["holding"] is True
+    assert head["exit_date"] is None and head["exit_reason"] is None
+    assert head["net_pnl"] is None and head["net_return"] is None

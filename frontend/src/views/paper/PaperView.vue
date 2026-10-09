@@ -26,7 +26,10 @@
           <div class="stat-card">
             <div class="stat-label">当前净值</div>
             <div class="stat-value">{{ fmtNum(ov.account.nav, 4) }}</div>
-            <div class="stat-sub">资产 {{ fmtYuan(ov.account.cash) }}</div>
+            <div class="stat-sub">
+              资产 {{ fmtYuan(ov.account.total_asset) }}
+              <span v-if="ov.account.nav_date || ov.data_as_of">｜净值日 {{ ov.account.nav_date ?? ov.data_as_of }}</span>
+            </div>
           </div>
         </el-col>
         <el-col :span="4">
@@ -150,7 +153,7 @@
 
       <!-- 最近交易 -->
       <el-card shadow="never" class="chart-card">
-        <template #header>最近交易（最多 50 笔，倒序）</template>
+        <template #header>最近交易（最近 100 笔 · 含持仓中 · 按买入日倒序）</template>
         <el-table :data="ov.recent_trades ?? []" size="small" max-height="360">
           <el-table-column prop="symbol" label="代码" min-width="90" />
           <el-table-column prop="entry_date" label="买入日" width="100" />
