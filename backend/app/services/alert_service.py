@@ -87,6 +87,8 @@ from app.services.wecom_client import SendResult, wecom_client
 ACTIONS: tuple[str, ...] = (
     "open_position",
     "close_position",
+    "entry_plan",
+    "intraday_exit_alert",
     "daily_summary",
     "test",
     "job_failed",
@@ -941,6 +943,63 @@ def notify_job_failed(
 # ======================================================================
 # 事件构造：每日早报（08:00「今日持仓」）
 # ======================================================================
+def notify_entry_plan(
+    *,
+    run_date: str,
+    signal_date: str,
+    candidates: list[dict[str, Any]],
+    position_count: int,
+    max_positions: int,
+    account_id: str,
+    account_name: str,
+    strategy_name: str,
+    async_send: bool = True,
+) -> dict[str, Any]:
+    """建仓计划：T 日信号 -> T+1 开盘成交。
+
+    ★ 持仓已满**也推送**候选（主人 2026-10-09 指定）—— 引擎槽位满不下单，
+      但"哪些票过了全部门"这个信息本身有价值。幂等键 `entry_plan|{account}|{信号日}`。
+    """
+    if not candidates:
+        return {"dispatched": False, "ok": True, "skipped": True, "reason": "无候选"}
+
+    exec_date = signal_date
+    try:
+        from app.services.calendar_service import calendar  # noqa: PLC0415
+
+        end = (pd.Timestamp(signal_date) + pd.Timedelta(days=15)).strftime("%Y-%m-%d")
+        days = calendar.trading_days(signal_date, end)
+        if len(days) >= 2:
+            exec_date = str(days[1])[:10]
+    except Exception:
+        pass
+
+    rows = "".join(
+        f"> {i + 1}. <font color=\"warning\">**{c['symbol']}**</font>"
+        f"（打分 {c['score']:.4f}）<br>"
+        for i, c in enumerate(candidates)
+    )
+    return dispatch_event(
+        "entry_plan",
+        {
+            "strategy_name": strategy_name,
+            "account_name": account_name,
+            "signal_date": signal_date,
+            "exec_date": exec_date,
+            "candidates": candidates,
+            "count": len(candidates),
+            "position_count": position_count,
+            "max_positions": max_positions,
+            "full": bool(max_positions > 0 and position_count >= max_positions),
+            "rows": rows,
+            "date": run_date,
+        },
+        event_key=f"entry_plan|{account_id}|{signal_date}",
+        account_id=account_id,
+        sync=not async_send,
+    )
+
+
 def notify_daily_summary(
     *,
     account_id: str | None = None,
@@ -1399,6 +1458,19 @@ def _sample_context(action: str) -> dict[str, Any]:
         "open_count": 2,
         "close_count": 2,
         "net_pnl_today": 5963.4,
+        # --- entry_plan（建仓计划，2026-10-09）---
+        "signal_date": "2026-10-09",
+        "exec_date": "2026-10-12",
+        "candidates": [{"symbol": "sh.600519", "score": 0.4213}],
+        "count": 1,
+        "full": False,
+        "rows": "> 1. <font color=\"warning\">**sh.600519**</font>（打分 0.4213）<br>",
+        # --- intraday_exit_alert（盘中清仓预警，2026-10-09）---
+        "holdings_count": 3,
+        "alerts": [
+            {"symbol": "sh.600519", "live_price": 1680.55, "reasons": "time_stop（已持有 30 >= 30 个交易日）"}
+        ],
+        "alert_rows": "> sh.600519｜现价 1680.55｜time_stop<br>",
         # --- daily_summary（今日持仓早报）---
         "has_position": True,
         "holdings_text": (

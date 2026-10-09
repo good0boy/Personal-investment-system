@@ -222,3 +222,46 @@ templates:
       > 时间：{{ time }}
       >
       > ⚠️ 请检查 <font color="comment">系统状态 → 调度任务</font> 里的执行记录与后端日志。
+
+  # ----------------------------------------------------------
+  # 建仓计划（2026-10-09 新增）：T 日信号 -> T+1 开盘价成交。
+  # ★ 持仓已满也推送候选（引擎槽位满不下单，但候选照报 —— 主人指定）。
+  # ----------------------------------------------------------
+  entry_plan:
+    title: "持仓提醒 · 建仓计划（{{ signal_date }} 信号）"
+    level: info
+    vars:
+      - "strategy_name / account_name / date: 运行日"
+      - "signal_date: 信号日（T）"
+      - "exec_date: 预计成交日（T+1 开盘）"
+      - "candidates: 候选清单 [{symbol, score}]"
+      - "count: 候选只数"
+      - "position_count / max_positions: 当前持仓 / 上限"
+      - "full: 持仓是否已满"
+      - "rows: 已渲染的候选行"
+    body: |
+      **持仓提醒 · 建仓计划**
+      > 信号日：{{ signal_date }}　→ <font color="warning">**T+1（{{ exec_date }}）开盘价成交**</font>
+      > 当前仓位：{{ position_count }} / {{ max_positions }} 只{% if full %}　<font color="comment">（已满：以下候选仅供参考，不一定会全部成交）</font>{% endif %}
+      > 过全部门候选 {{ count }} 只（按打分降序）：
+      {{ rows }}
+      > 账户：{{ account_name }}　策略：{{ strategy_name }}
+
+  # ----------------------------------------------------------
+  # 盘中清仓预警（2026-10-09 新增）：14:45 用 fuyao 实时价近似当日收盘。
+  # ⚠️ 是预警不是成交 —— 引擎按 T 日收盘价撮合，以当晚 23:00 重算为准。
+  # ----------------------------------------------------------
+  intraday_exit_alert:
+    title: "持仓提醒 · 盘中清仓预警（{{ date }}）"
+    level: warning
+    vars:
+      - "strategy_name / account_name / date"
+      - "holdings_count: 当前持仓只数"
+      - "alerts: 预警明细 [{symbol, live_price, reasons}]"
+      - "alert_rows: 已渲染的明细行"
+    body: |
+      **持仓提醒 · 盘中清仓预警**（14:45 · fuyao 实时价近似）
+      > 当前持仓 {{ holdings_count }} 只，其中 <font color="warning">**{{ alerts | length }} 只**</font>可能于今日尾盘被清仓（引擎按收盘价撮合）：
+      {{ alert_rows }}
+      > <font color="comment">⚠️ 盘中预警，实际以 23:00 引擎重算为准；现价与收盘价可能有差异。</font>
+      > 账户：{{ account_name }}　策略：{{ strategy_name }}　时间：{{ date }}

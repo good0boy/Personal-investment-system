@@ -148,6 +148,28 @@ def paper_daily_job(run_date: str, *, trigger_type: str = "manual") -> dict[str,
     result = paper_service.run_paper_day(run_date, trigger=trigger_type)
     return {"implemented": True, **result}
 
+
+# ======================================================================
+# 任务 4：模拟盘盘中检查（14:45，2026-10-09 新增）
+# ======================================================================
+@register_job("paper_intraday_check", "模拟盘盘中清仓预警")
+def paper_intraday_check_job(run_date: str, *, trigger_type: str = "manual") -> dict[str, Any]:
+    """交易日 14:45 触发：用 fuyao 实时快照价对当前持仓做清仓预警。
+
+    背景：quality_reversal 的卖出口径是「T 日信号 -> T 日尾盘按收盘价成交」，
+    引擎 23:00 才判定并撮合，消息推出来时已收盘。本任务提前到 14:45，
+    用 fuyao 快照价近似当日收盘，给主人留 15 分钟操作窗口。
+    ⚠️ 推送的是**预警**，实际成交以当晚 23:00 引擎重算为准（可能不一致）。
+    补跑无意义（盘中检查是"当下播报"）→ 已加入 _NO_CATCH_UP_JOBS。
+    """
+    if not calendar.is_trading_day(run_date):
+        return {"skipped": True, "reason": f"{run_date} 非交易日"}
+
+    from app.services import paper_intraday_service  # noqa: PLC0415 - 延迟导入避免环
+
+    result = paper_intraday_service.run_intraday_check()
+    return {"implemented": True, "run_date": run_date, **result}
+
 # ======================================================================
 # 任务 3：每日持仓早报（模块 5，2026-09-20 实现）
 # ======================================================================

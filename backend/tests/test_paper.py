@@ -233,3 +233,25 @@ def test_trigger_run_now_raises_when_scheduler_off(paper_env: Path, monkeypatch:
     paper_service.ensure_default_account()
     with pytest.raises(PaperError, match="调度器未运行"):
         paper_service.trigger_run_now()
+
+
+def test_paper_account_strategy_switch(paper_env: Path, monkeypatch):
+    """★ config.yaml paper.strategy 与账户行不一致 → 自动切换并写入参数。"""
+    from app.core.config import settings
+    from app.repos import meta_repo
+
+    monkeypatch.setattr(settings.paper, "strategy", "quality_reversal")
+    monkeypatch.setattr(
+        settings.paper, "params",
+        {"ma_rise_confirm_window": 10, "max_positions": 10},
+    )
+
+    row = paper_service.ensure_default_account()
+
+    assert row["strategy"] == "quality_reversal"
+    import json as _json
+    assert _json.loads(row["param_json"])["ma_rise_confirm_window"] == 10
+    # 再跑一次幂等（不应报错，也不应重复改）
+    row2 = paper_service.ensure_default_account()
+    assert row2["strategy"] == "quality_reversal"
+    assert meta_repo.get_paper_account("default")["param_json"] == row["param_json"]

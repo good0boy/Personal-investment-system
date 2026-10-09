@@ -554,3 +554,24 @@ def test_ma_rise_gate_window5_same_direction(tmp_path, monkeypatch):
 
     touched = _touched(res)
     assert S0 in touched and S2 not in touched
+
+
+def test_entry_candidates_recorded_even_when_slots_full(tmp_path, monkeypatch):
+    """★ 槽位满也必须记录全部过门候选（模拟盘建仓计划消息依赖，2026-10-09）。
+
+    max_positions=1 + 两个候选都过门 → 只买 1 只，但 last_entry_candidates
+    应有 2 条。同时验证回测结果不受影响（槽满不额外下单）。
+    """
+    _install(tmp_path, monkeypatch, drift={S0: 0.01, S1: 0.01})
+    _install_factors(_carrier())
+
+    eng = _engine(_params(max_positions=1, hold_days_max=100))
+    res = eng.run()
+
+    st = eng.strategy
+    assert st.last_entry_candidates is not None, "应记录候选"
+    cands = st.last_entry_candidates
+    assert len(cands["items"]) >= 2, "槽位满也应记录全部过门候选"
+    assert cands["position_count"] <= 1
+    # 槽位约束：position_count 不会超过 1（上面已断言）；候选照记
+    assert res is not None

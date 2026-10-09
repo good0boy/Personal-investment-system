@@ -337,6 +337,11 @@ class PaperConfig(BaseModel):
     default_account_id: str = "default"
     default_account_name: str = "默认模拟账户"
     init_cash: float = 1_000_000
+    #: 模拟盘策略（2026-10-09 主人拍板：切换为 quality_reversal 的 oosma10-base 口径，
+    #: 原 momentum 仿真下线）。空串 = 不切换（保留账户现状）。
+    strategy: str = ""
+    #: 随切换一起写入账户行的参数（oosma10-base 口径显式固化，防默认值漂移）。
+    params: dict[str, Any] | None = None
 
 
 class DataSyncConfig(BaseModel):

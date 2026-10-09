@@ -205,6 +205,13 @@ scheduler:
     catalog_check:
       cron: { hour: 9, minute: 0 }
       enabled: true
+    # 模拟盘盘中检查：交易日 14:45（2026-10-09 新增）。
+    # 用 fuyao 实时快照价近似当日收盘，对当前持仓做**清仓预警**（time_stop /
+    # over_realized / quality_broken / limit_down），15 分钟后尾盘可操作。
+    # ⚠️ 只是预警：引擎按 T 日收盘价撮合，实际以当晚 23:00 重算为准。
+    paper_intraday_check:
+      cron: { hour: 14, minute: 45 }
+      enabled: true
   # 启动时补跑缺失交易日（本地关机会漏跑，这是刚需）
   catch_up_on_startup: true
   catch_up_max_days: 30
@@ -214,6 +221,28 @@ paper:
   default_account_id: "default"
   default_account_name: "默认模拟账户"
   init_cash: 1000000
+  # ★ 模拟盘策略（2026-10-09 主人拍板）：切换为 quality_reversal 的 oosma10-base 口径，
+  #   原 momentum 仿真下线。策略变化会触发全量重算（净值曲线整体重写，设计使然）。
+  strategy: quality_reversal
+  # oosma10-base 参数显式固化（未列出的键用策略默认）；变更后重启服务生效
+  params:
+    max_positions: 10
+    max_weight_per_stock: 0.10
+    hold_days_max: 30
+    rebalance_every: 5
+    index_ret20_min: -0.10
+    reversal_pct: 0.50
+    max_ret_20_max: 0.15
+    use_quality_gate: true
+    use_lowvol_gate: true
+    use_lowturn_gate: true
+    use_liquidity_gate: true
+    min_amount_mean_20: 50000000
+    ma_rise_confirm_window: 10
+    realized_ret20_max: 0.30
+    stop_loss_p_mult: 0.0
+    take_profit_p_mult: 0.0
+    take_profit_abs: 0.0
 
 # ---------------- 提醒（企微）----------------
 alert:

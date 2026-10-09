@@ -157,6 +157,10 @@ class QualityReversalStrategy(BaseStrategy):
     name = "quality_reversal"
     version = "2.3"
 
+    #: 最近一次建仓评估的全部过门候选（观测口，供模拟盘"建仓计划"消息使用；
+    #: 持仓已满也要推送候选 —— 主人 2026-10-09 指定。不写入任何 parquet，非引擎契约）。
+    last_entry_candidates: dict | None = None
+
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         super().__init__(params)
         v2 = settings.strategy_v2
@@ -372,8 +376,9 @@ class QualityReversalStrategy(BaseStrategy):
         self._rebalance_days += 1
 
         max_pos = int(self.params["max_positions"])
-        if ctx.account.position_count >= max_pos:
-            return                                   # 槽位已满：只补空缺，不强制换手
+        # ★ 槽位满**不再提前返回**（2026-10-09）：评估照常做，候选记入
+        #   `last_entry_candidates` 供消息推送；只是不下买单（need<=0）。
+        #   回测结果不变 —— 变的只是"槽位满的日子也留下评估痕迹"。
 
         # ---- 门1 · 大盘非急跌（粗择时：近 20 日累计涨跌幅 > 下限）----
         r20_idx = ctx.market.index_ret(di, 20)
@@ -414,6 +419,14 @@ class QualityReversalStrategy(BaseStrategy):
 
         # 稳定排序 + 代码 tiebreaker（同一份配置跑两次结果逐行一致）
         ordered = sorted(cands.items(), key=lambda kv: (-float(kv[1]), kv[0]))
+
+        # ★ 记录全部过门候选（含持仓已满的日子）—— 模拟盘建仓计划消息的数据源
+        self.last_entry_candidates = {
+            "date": ctx.day,
+            "position_count": int(ctx.account.position_count),
+            "max_positions": int(max_pos),
+            "items": [{"symbol": sym, "score": round(float(sc), 6)} for sym, sc in ordered[:20]],
+        }
 
         held = set(ctx.account.positions.keys())
         need = max_pos - ctx.account.position_count

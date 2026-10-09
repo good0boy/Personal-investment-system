@@ -63,6 +63,7 @@ def _make_runner(job_id: str):
 #: job_id -> 配置键映射（config.yaml scheduler.jobs 下）
 _JOB_CONFIG_KEYS = {
     "paper_daily": "paper_daily",
+    "paper_intraday_check": "paper_intraday_check",
     "alert_daily_summary": "alert_daily_summary",
     "catalog_check": "catalog_check",
 }
@@ -71,7 +72,7 @@ _JOB_CONFIG_KEYS = {
 #: 只在周一至周五触发的任务（cron 粗筛；精确交易日判断在任务内做）。
 #: ⚠️ 早报**不在此列** —— 它读的是已有产物，周末也发得出来，
 #:    而且"周末静默"会被误认为"系统死了"。见 `alert_daily_summary_job`。
-_WEEKDAY_ONLY_JOBS = {"paper_daily", "catalog_check"}
+_WEEKDAY_ONLY_JOBS = {"paper_daily", "paper_intraday_check", "catalog_check"}
 
 
 def start_scheduler() -> dict[str, Any]:
@@ -213,7 +214,7 @@ def trigger_job_now(job_id: str, run_date: str | None = None) -> dict[str, Any]:
 #:    补跑 30 天会连发 30 次（好在幂等键 `{date}|daily_summary` 会撞掉 29 次，
 #:    但那 29 次是**白跑引擎外的读盘 + 渲染**，且日志里一片 skipped 噪音）。
 #:    更糟的是语义错误：补跑历史日期时播报的是**当前**持仓，与日期对不上。
-_NO_CATCH_UP_JOBS = {"alert_daily_summary"}
+_NO_CATCH_UP_JOBS = {"alert_daily_summary", "paper_intraday_check"}
 
 
 def run_startup_catch_up() -> dict[str, Any]:

@@ -106,6 +106,20 @@ def ensure_default_account() -> dict[str, Any]:
     row = meta_repo.get_paper_account(cfg.default_account_id)
     if row is None:  # pragma: no cover - ensure 后必存在
         raise PaperError(f"模拟账户初始化失败：{cfg.default_account_id}")
+
+    # 策略切换（2026-10-09）：config.yaml 的 paper.strategy 与账户行不一致时落库。
+    # 策略变化会触发全量重算（净值历史整体重写）—— 设计使然，主人已知情。
+    cfg_strategy = (cfg.strategy or "").strip()
+    if cfg_strategy and str(row.get("strategy") or "") != cfg_strategy:
+        params_json = (
+            json.dumps(cfg.params, ensure_ascii=False) if cfg.params else None
+        )
+        meta_repo.update_paper_account_strategy(cfg.default_account_id, cfg_strategy, params_json)
+        logger.info(
+            f"[paper] 模拟盘策略切换：{row.get('strategy')!r} -> {cfg_strategy!r}（原策略下线，"
+            f"净值自 {PAPER_START_DATE} 起全量重算）"
+        )
+        row = meta_repo.get_paper_account(cfg.default_account_id)
     return row
 
 
@@ -231,6 +245,7 @@ def run_paper_day(
             trigger=trigger,
             cost_seconds=cost_seconds,
             params=dict(strategy.params),
+            strategy_name=strategy_name,
         )
         final = equity.iloc[-1]
         meta_repo.update_paper_run_state(
@@ -255,6 +270,8 @@ def run_paper_day(
             account_id=account_id,
             run_date=run_date,
             notify=notify,
+                    entry_candidates=getattr(strategy, "last_entry_candidates", None),
+            max_positions=int(strategy.params.get("max_positions", 10)),
         )
         summary["alerts"] = notify_stats
         return summary
@@ -271,6 +288,8 @@ def _dispatch_alerts(
     account_id: str,
     run_date: str,
     notify: bool | None,
+    entry_candidates: dict[str, Any] | None = None,
+    max_positions: int = 10,
 ) -> dict[str, Any]:
     """派发交易提醒（模块 5）。**任何异常都不许冒泡**。
 
@@ -292,10 +311,11 @@ def _dispatch_alerts(
     if not notify:
         return {"skipped": True, "reason": f"{run_date} 非最新交易日，补跑不推送"}
 
+    out: dict[str, Any] = {}
     try:
         from app.services import alert_service  # noqa: PLC0415 —— 避免模块级循环导入
 
-        return alert_service.notify_trades(
+        out["trades"] = alert_service.notify_trades(
             orders=result.orders,
             trades=result.trades,
             nav=equity,
@@ -303,12 +323,36 @@ def _dispatch_alerts(
             account_id=account_id,
             account_name=str(account.get("name") or account_id),
             strategy_name=strategy_name,
-            max_positions=settings.strategy.max_positions,
+            max_positions=int(max_positions),
             async_send=True,      # 别把跑批线程卡在退避睡眠里
         )
     except Exception as exc:
         logger.exception(f"[paper] 交易提醒派发异常（不影响跑批结果）：{exc!r}")
-        return {"skipped": True, "reason": f"提醒派发异常：{exc}"}
+        out["trades"] = {"skipped": True, "reason": f"提醒派发异常：{exc}"}
+
+    # 建仓计划（2026-10-09）：T 日信号 -> T+1 开盘成交，当晚推送、次日开盘前可看。
+    # ★ 持仓已满也推送候选（主人指定）—— 引擎槽位满不下单，但候选照报。
+    try:
+        cands = entry_candidates or {}
+        items = cands.get("items") or []
+        if items:
+            from app.services import alert_service  # noqa: PLC0415
+
+            out["entry_plan"] = alert_service.notify_entry_plan(
+                run_date=run_date,
+                signal_date=str(cands.get("date") or run_date),
+                candidates=items,
+                position_count=int(cands.get("position_count") or 0),
+                max_positions=int(cands.get("max_positions") or 0),
+                account_id=account_id,
+                account_name=str(account.get("name") or account_id),
+                strategy_name=strategy_name,
+                async_send=True,
+            )
+    except Exception as exc:
+        logger.exception(f"[paper] 建仓计划推送异常（不影响跑批结果）：{exc!r}")
+        out["entry_plan"] = {"skipped": True, "reason": f"推送异常：{exc}"}
+    return out
 
 
 def _latest_trading_day() -> str | None:
@@ -347,6 +391,7 @@ def _write_artifacts(
     trigger: str,
     cost_seconds: float,
     params: dict[str, Any],
+    strategy_name: str,
 ) -> dict[str, Any]:
     """覆盖落盘 `data/paper/{account_id}/`（nav/positions/trades/orders/config）。
 
@@ -380,7 +425,7 @@ def _write_artifacts(
     final = equity.iloc[-1]
     config = {
         "account_id": account_id,
-        "strategy": DEFAULT_STRATEGY,
+        "strategy": strategy_name,
         "params": params,
         "start_date": PAPER_START_DATE,
         "data_as_of": run_date,

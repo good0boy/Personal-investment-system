@@ -219,6 +219,18 @@ def delete_backtest_run(run_id: str) -> None:
     db.execute("DELETE FROM backtest_run WHERE run_id = ?", (run_id,))
 
 
+def update_paper_account_strategy(
+    account_id: str,
+    strategy: str,
+    param_json: str | None = None,
+) -> None:
+    """切换模拟盘策略（含参数）。策略变化触发全量重算，净值历史整体重写。"""
+    db.execute(
+        "UPDATE paper_account SET strategy = ?, param_json = ? WHERE id = ?",
+        (strategy, param_json, account_id),
+    )
+
+
 def list_backtest_runs(
     strategy: str | None = None,
     limit: int = 100,
