@@ -255,3 +255,26 @@ def test_paper_account_strategy_switch(paper_env: Path, monkeypatch):
     row2 = paper_service.ensure_default_account()
     assert row2["strategy"] == "quality_reversal"
     assert meta_repo.get_paper_account("default")["param_json"] == row["param_json"]
+
+
+def test_paper_strategy_switch_invalidates_artifacts(paper_env: Path, monkeypatch):
+    """★ 策略切换必须作废旧策略产物（nav/positions/trades/orders/config）。
+
+    幂等闸（last_nav_date >= run_date → 跳过）只看日期不看策略：
+    不删产物的话，旧 momentum 净值会一直展示在前端净值曲线上，
+    且 nightly 跑批也会被幂等闸拦住不重算。
+    """
+    from app.core.config import settings
+
+    pdir = paper_env / "default"     # account_dir = PAPER_DIR / account_id
+    pdir.mkdir(parents=True, exist_ok=True)
+    for name in ("nav.parquet", "positions.parquet", "trades.parquet", "orders.parquet", "config.json"):
+        (pdir / name).write_bytes(b"stale")
+
+    monkeypatch.setattr(settings.paper, "strategy", "quality_reversal")
+    monkeypatch.setattr(settings.paper, "params", {"ma_rise_confirm_window": 10})
+
+    paper_service.ensure_default_account()
+
+    leftovers = [f.name for f in pdir.iterdir() if f.name != "placeholder"]
+    assert leftovers == [], f"旧策略产物应全部作废，残留：{leftovers}"

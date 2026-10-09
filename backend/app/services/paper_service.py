@@ -115,12 +115,35 @@ def ensure_default_account() -> dict[str, Any]:
             json.dumps(cfg.params, ensure_ascii=False) if cfg.params else None
         )
         meta_repo.update_paper_account_strategy(cfg.default_account_id, cfg_strategy, params_json)
+        # ★ 旧策略产物必须同步作废：幂等闸（last_nav_date >= run_date → 跳过）
+        #   只看日期不看策略 —— 不删的话，旧 momentum 净值会一直展示在
+        #   前端净值曲线上，且今晚 23:00 的跑批也会被幂等闸拦住不重算。
+        removed = _invalidate_paper_artifacts(cfg.default_account_id)
         logger.info(
             f"[paper] 模拟盘策略切换：{row.get('strategy')!r} -> {cfg_strategy!r}（原策略下线，"
-            f"净值自 {PAPER_START_DATE} 起全量重算）"
+            f"净值自 {PAPER_START_DATE} 起全量重算）；已作废旧产物 {removed} 份"
         )
         row = meta_repo.get_paper_account(cfg.default_account_id)
     return row
+
+
+def _invalidate_paper_artifacts(account_id: str) -> int:
+    """删除模拟盘全部数据产物（nav/positions/trades/orders/config）。
+
+    只在**策略切换**时调用：策略变了，旧净值曲线就是另一条策略的历史，
+    留着只会误导（前端"历史净值曲线"展示的就是这些文件）。删除后
+    下一次 run_paper_day 会从 PAPER_START_DATE 全量重算新策略。
+    """
+    d = account_dir(account_id)
+    removed = 0
+    if not d.exists():
+        return 0
+    for name in ("nav.parquet", "positions.parquet", "trades.parquet", "orders.parquet", "config.json"):
+        f = d / name
+        if f.exists():
+            f.unlink()
+            removed += 1
+    return removed
 
 
 def require_account(account_id: str) -> dict[str, Any]:
@@ -441,8 +464,15 @@ def _write_artifacts(
         "finished_at": datetime.now().isoformat(timespec="seconds"),
         "metrics": result.metrics,
         "note": (
-            "模拟盘 = 冻结策略 v1.2 的日度全量重算；策略当前被证实无效"
-            "（样本内年化 -49.5%），本产物的价值是验证日度跟踪链路，不代表盈利能力。"
+            "模拟盘 = quality_reversal（oosma10-base 口径：MA10 上行确认 + 全门开启）"
+            "日度全量重算。⚠️ 该配置无干净样本外佐证（参数在看过牛市OOS 结果后选定，"
+            "规格书 §7.15），且本质是「低波+低换+低动+高成长」beta 组合（§7.13）；"
+            "本产物用于仿真跟踪，不代表盈利能力。"
+            if strategy_name == "quality_reversal"
+            else (
+                "模拟盘 = 冻结策略 v1.2 的日度全量重算；策略当前被证实无效"
+                "（样本内年化 -49.5%），本产物的价值是验证日度跟踪链路，不代表盈利能力。"
+            )
         ),
     }
     # ⚠️ 必须先过 json_safe：metrics 里有 numpy 标量，np.int64 不是 int 子类。
