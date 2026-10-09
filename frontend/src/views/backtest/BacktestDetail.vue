@@ -241,6 +241,7 @@
                 stripe
                 :height="tradesH"
                 empty-text="没有符合条件的交易"
+                @sort-change="onTradesSort"
               >
                 <el-table-column label="代码" width="106">
                   <template #default="{ row }">
@@ -271,12 +272,12 @@
                 <el-table-column label="成本" width="94" align="right">
                   <template #default="{ row }">{{ fmtMoney(row.cost) }}</template>
                 </el-table-column>
-                <el-table-column label="净盈亏" width="120" align="right" sortable>
+                <el-table-column label="净盈亏" width="120" align="right" sortable="custom" prop="net_pnl">
                   <template #default="{ row }">
                     <span :class="pnlClass(row.net_pnl)">{{ fmtMoneySigned(row.net_pnl) }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="净收益率" width="100" align="right" sortable>
+                <el-table-column label="净收益率" width="100" align="right" sortable="custom" prop="net_return">
                   <template #default="{ row }">
                     <span :class="pnlClass(row.net_return)">{{ fmtPctSigned(row.net_return) }}</span>
                   </template>
@@ -974,12 +975,17 @@ const tradeQuery = reactive<{
   symbol: string
   exit_reasons: string[]
   win: 'all' | 'win' | 'lose'
+  sort: string
+  desc: boolean
 }>({
   page: 1,
   page_size: 50,
   symbol: '',
   exit_reasons: [],
   win: 'all',
+  // 排序走后端（服务端分页，前端只能排当前页）；默认按买入日倒序
+  sort: 'entry_date',
+  desc: true,
 })
 
 const tradeDateRange = ref<[string, string] | null>(null)
@@ -994,7 +1000,21 @@ async function loadTrades(page = 1) {
     win: tradeQuery.win,
     start: tradeDateRange.value?.[0],
     end: tradeDateRange.value?.[1],
+    sort: tradeQuery.sort,
+    desc: tradeQuery.desc,
   })
+}
+
+/** 交易表头排序：只放行净盈亏/净收益率两列（后端白名单内），其余列点了就回到默认。 */
+function onTradesSort({ prop, order }: { prop: string | null; order: string | null }) {
+  if (order && (prop === 'net_return' || prop === 'net_pnl')) {
+    tradeQuery.sort = prop
+    tradeQuery.desc = order === 'descending'
+  } else {
+    tradeQuery.sort = 'entry_date'
+    tradeQuery.desc = true
+  }
+  loadTrades(1)
 }
 
 const EXPORT_MAX = 500

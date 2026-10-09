@@ -361,13 +361,25 @@ def test_equity_downsampled_when_too_many_points(bt_dir):
     assert s["date"] == sorted(s["date"]), "日期必须单调递增"
 
 
-def test_equity_missing_file_raises(bt_dir):
-    from app.core.errors import DataNotReadyError
+def test_equity_missing_file_raises(bt_dir, monkeypatch):
+    """★ metrics 已完成但 equity.parquet 缺失 → 扫描时被自愈删除。
 
+    语义（2026-10-09 起）：底层 `read_equity` 对"文件不存在"仍抛 DataNotReadyError
+    （不变）；但服务层 `get_equity` 会先过 scan_runs —— 坏档在扫描时已被删除，
+    所以这里抛的是 **NotFoundError**（记录已不存在），而不是 503。
+    """
+    from app.core.errors import DataNotReadyError, NotFoundError
+
+    monkeypatch.setattr(svc.meta_repo, "delete_backtest_run", lambda rid: None)
     _make_run(bt_dir, "r1")
     (bt_dir / STRATEGY / "r1" / "equity.parquet").unlink()
+
     with pytest.raises(DataNotReadyError):
+        data_store.read_equity(STRATEGY, "r1")   # 底层读取语义不变
+
+    with pytest.raises(NotFoundError):           # 服务层：坏档已被自愈删除
         svc.get_equity(STRATEGY, "r1")
+    assert not (bt_dir / STRATEGY / "r1").exists()
 
 
 # ======================================================================
@@ -503,3 +515,40 @@ def test_orders_filter_by_status(bt_dir):
     pending = svc.get_orders(STRATEGY, "r-orders", status="pending")
     assert pending["total"] == 1
     assert pending["items"][0]["note"].startswith("一字跌停")
+
+
+# ======================================================================
+# 产物不完整自愈（2026-10-09 smoke:11 事件）
+# ======================================================================
+def test_missing_equity_run_is_deleted_and_skipped(bt_dir, monkeypatch):
+    """★ metrics 已写完（跑批正常结束）但 equity.parquet 缺失 → 自动删除并从列表移除。
+
+    详情页读净值会 503，这种坏档留在列表里只会误导。
+    """
+    deleted: list[str] = []
+    monkeypatch.setattr(svc.meta_repo, "delete_backtest_run", lambda rid: deleted.append(rid))
+
+    rid = "20260101-000000-broken"
+    d = bt_dir / STRATEGY / rid
+    d.mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps(_config()), encoding="utf-8")
+    (d / "metrics.json").write_text(json.dumps({"annual_return": 0.1}), encoding="utf-8")
+
+    rows = svc.scan_runs(force=True)
+
+    assert not d.exists(), "缺 equity 的已完成 run 应被自动删除"
+    assert deleted == [rid], "DB 登记行应同步清理"
+    assert all(r["run_id"] != rid for r in rows)
+
+
+def test_running_run_without_metrics_is_not_deleted(bt_dir):
+    """正在跑的 run（只有 config.json，metrics 未写）不能被误删。"""
+    rid = "20260101-000001-running"
+    d = bt_dir / STRATEGY / rid
+    d.mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps(_config()), encoding="utf-8")
+
+    rows = svc.scan_runs(force=True)
+
+    assert d.exists(), "未完成的 run 绝不能被自愈逻辑误删"
+    assert any(r["run_id"] == rid for r in rows)

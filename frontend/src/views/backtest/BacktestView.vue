@@ -308,7 +308,7 @@ const strategies = computed(() => resp.value?.strategies ?? [])
 const total = computed(() => resp.value?.total ?? 0)
 
 const filter = reactive<{ strategy?: string; status?: string; tag?: string }>({})
-const sort = ref('created_at')
+const sort = ref('annual_return')
 const sortDesc = ref(true)
 /** 是否把参数寻优的子运行也列出来（默认否，否则列表页会被 sweep 的格子淹没） */
 const includeSweep = ref(false)

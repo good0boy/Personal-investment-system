@@ -298,6 +298,22 @@ def scan_runs(*, force: bool = False) -> list[dict[str, Any]]:
     db = _db_map()
     rows: list[dict[str, Any]] = []
     for strategy, run_id in data_store.list_all_runs():
+        # ★ 产物不完整自愈（2026-10-09 smoke:11 事件）：metrics.json 已写完
+        #   （= 跑批正常结束）但 equity.parquet 缺失 → 详情页读净值必然 503，
+        #   留在列表里只会误导。判定为坏档：删目录 + 清 DB 登记行，并不再展示。
+        #   ⚠️ 正在跑的 run（metrics 尚未写）不在此列，不会被误删。
+        rd = data_store.run_dir(strategy, run_id)
+        if (
+            (rd / "config.json").exists()
+            and (rd / "metrics.json").exists()
+            and not (rd / "equity.parquet").exists()
+        ):
+            logger.warning(
+                f"回测 {strategy}/{run_id} 缺少 equity.parquet（产物不完整），已自动删除并从列表移除"
+            )
+            data_store.delete_run(strategy, run_id)
+            meta_repo.delete_backtest_run(run_id)
+            continue
         try:
             rows.append(_scan_one(strategy, run_id, db.get(run_id)))
         except Exception as exc:

@@ -214,6 +214,11 @@ def finish_backtest_run(
     )
 
 
+def delete_backtest_run(run_id: str) -> None:
+    """删除回测运行登记行（产物目录被清理时同步清 DB，避免脏登记残留）。"""
+    db.execute("DELETE FROM backtest_run WHERE run_id = ?", (run_id,))
+
+
 def list_backtest_runs(
     strategy: str | None = None,
     limit: int = 100,
