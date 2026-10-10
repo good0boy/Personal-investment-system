@@ -132,3 +132,52 @@ def test_fundamental_staleness_missing_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(data_store, "FACTOR_DIR", tmp_path / "factor")
     rep = ds.fundamental_staleness()
     assert rep["available"] is False
+
+
+# ======================================================================
+# 兜底机制（2026-10-10）：僵尸 running 清理
+# ======================================================================
+@pytest.fixture
+def meta_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """tmp meta.db（跑 schema.sql），测试结束关连接。"""
+    from app.repos import db as db_module
+
+    db_module.close_connection()
+    db_file = tmp_path / "meta" / "meta.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(db_module, "META_DB", db_file)
+    conn = db_module.get_connection()
+    conn.executescript((BACKEND_ROOT / "sql" / "schema.sql").read_text(encoding="utf-8"))
+    yield db_file
+    db_module.close_connection()
+
+
+def test_job_reap_zombies(meta_env: Path) -> None:
+    """★ 进程崩溃留下的 running 记录（>24h）→ 启动收尸改判 failed；24h 内不动。"""
+    import sqlite3
+
+    from app.repos import meta_repo
+
+    # 造两条：一条 48h 前的僵尸 running、一条 1h 前的正常 running
+    conn = sqlite3.connect(meta_env)
+    conn.execute(
+        "INSERT INTO job_run_log (job_id, run_date, trigger_type, status, created_at) "
+        "VALUES ('paper_daily', '2026-10-01', 'cron', 'running', "
+        "datetime('now', 'localtime', '-48 hours'))"
+    )
+    conn.execute(
+        "INSERT INTO job_run_log (job_id, run_date, trigger_type, status, created_at) "
+        "VALUES ('paper_daily', '2026-10-09', 'cron', 'running', "
+        "datetime('now', 'localtime', '-1 hours'))"
+    )
+    conn.commit()
+    conn.close()
+
+    n = meta_repo.job_reap_zombies(older_than_hours=24)
+    assert n == 1, "只应收尸超过 24h 的"
+
+    rows = meta_repo.job_recent(10)
+    by_date = {r["run_date"]: r for r in rows}
+    assert by_date["2026-10-01"]["status"] == "failed"
+    assert "zombie" in (by_date["2026-10-01"]["message"] or "")
+    assert by_date["2026-10-09"]["status"] == "running", "1h 内的不动"

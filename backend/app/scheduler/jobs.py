@@ -261,6 +261,24 @@ def app_bootstrap_job(run_date: str, *, trigger_type: str = "manual") -> dict[st
         }
     )
 
+    # 2.5) 僵尸 running 清理（2026-10-10 兜底）：进程崩溃/断电后 job_run_log
+    #      会永久停在 running，前端一直显示"正在跑"。启动时收尸（>24h 才算）。
+    try:
+        zombies = meta_repo.job_reap_zombies()
+        if zombies:
+            logger.warning(f"[bootstrap] 清理僵尸 running 记录 {zombies} 条（改判 failed）")
+    except Exception as exc:
+        logger.warning(f"[bootstrap] 僵尸清理异常（忽略）：{exc!r}")
+
+    # 2.5) 僵尸 running 清理（2026-10-10 兜底）：进程崩溃/断电后 job_run_log
+    #      会永久停在 running，前端一直显示"正在跑"。启动时收尸（>24h 才算）。
+    try:
+        zombies = meta_repo.job_reap_zombies()
+        if zombies:
+            logger.warning(f"[bootstrap] 清理僵尸 running 记录 {zombies} 条（改判 failed）")
+    except Exception as exc:
+        logger.warning(f"[bootstrap] 僵尸清理异常（忽略）：{exc!r}")
+
     # 3) 数据新鲜度告警（**不阻塞启动** —— 实际补数由 paper_daily 的
     #    覆盖率闸门 + catch_up 兜底；这里只把"数据旧了"大声说出来）
     _warn_stale_data()
@@ -392,6 +410,10 @@ def catch_up_missing_days(job_id: str, *, max_days: int | None = None) -> dict[s
 #: 子进程超时：全量补完 ~9h（本地实测）；服务器 IO 更慢留余量。
 #: 周一 06:00 + 12h 上限 = 18:00 前结束，不与 23:00 paper_daily 重叠。
 _FUNDAMENTAL_TIMEOUT = 12 * 60 * 60
+#: 进度停滞判定：状态文件（每通道每 25 只落盘，~2-3 分钟/次）的 mtime 心跳。
+#: ⚠️ 必须 >600s —— backfill_fundamental 熔断等待 wait_if_limited(max_wait=600)
+#: 属正常静默；30 分钟无任何通道推进 = 挂死（akshare socket 悬挂的典型症状）。
+_FUNDAMENTAL_STALL_LIMIT = 30 * 60
 
 
 @register_job("fundamental_weekly", "基本面/财务周频回补")
@@ -412,48 +434,37 @@ def fundamental_weekly_job(run_date: str, *, trigger_type: str = "manual") -> di
     - 06:00 起跑 + 12h 超时上限 = 18:00 前结束，不与 23:00 paper_daily 重叠
       （不再有新旧基本面混合读窗口）。
     """
-    import subprocess  # noqa: PLC0415 - 仅本任务用
     import sys  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
+    from app.core.paths import BACKFILL_FUND_STATE_FILE  # noqa: PLC0415
+    from app.core.subprocess_runner import run_with_watchdog  # noqa: PLC0415
+
     backend_root = Path(__file__).resolve().parents[2]
-    t0 = time.perf_counter()
-    try:
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "tools.backfill_fundamental",
-                "--force",
-            ],
-            cwd=str(backend_root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_FUNDAMENTAL_TIMEOUT,
-            check=False,
+    res = run_with_watchdog(
+        [sys.executable, "-m", "tools.backfill_fundamental", "--force"],
+        cwd=str(backend_root),
+        timeout=_FUNDAMENTAL_TIMEOUT,
+        name="基本面周频回补",
+        progress_files=(BACKFILL_FUND_STATE_FILE,),
+        stall_limit=_FUNDAMENTAL_STALL_LIMIT,
+        tail_lines=5,
+    )
+    tail = res.get("tail") or []
+    if not res.get("ok"):
+        # ★ 失败必须抛（2026-10-10 兜底）：此前超时/rc≠0 返回 dict 被-job 层
+        #   记 success、零告警 —— 一周基本面静默缺失没人知道。抛 AppError →
+        #   _run_with_log 记 failed + _notify_failure 推企微；状态文件断点
+        #   续传，重跑即续上。
+        raise AppError(
+            f"基本面周频回补失败：{res.get('reason') or '退出码 ' + str(res.get('returncode'))}"
+            f"（耗时 {res.get('cost_seconds')}s，状态文件已续传，可手动重跑续上）"
         )
-        ok = proc.returncode == 0
-        tail = (proc.stdout or "").strip().splitlines()[-5:]
-        if not ok:
-            logger.error(f"[fundamental_weekly] 回补失败 rc={proc.returncode}，尾部输出：{tail}")
-        return {
-            "implemented": True,
-            "ok": ok,
-            "mode": "force_full",
-            "returncode": proc.returncode,
-            "cost_seconds": round(time.perf_counter() - t0, 1),
-            "tail": tail,
-        }
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            f"[fundamental_weekly] 回补超时（>{_FUNDAMENTAL_TIMEOUT // 3600}h），"
-            "状态文件已续传 —— 下周一自动接着跑"
-        )
-        return {
-            "implemented": True,
-            "ok": False,
-            "timeout": True,
-            "cost_seconds": round(time.perf_counter() - t0, 1),
-        }
+    return {
+        "implemented": True,
+        "ok": True,
+        "mode": "force_full",
+        "returncode": res.get("returncode"),
+        "cost_seconds": res.get("cost_seconds"),
+        "tail": tail,
+    }

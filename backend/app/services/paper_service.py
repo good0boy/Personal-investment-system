@@ -48,7 +48,7 @@ from typing import Any
 import pandas as pd
 
 from app.core.config import settings
-from app.core.errors import NotFoundError, PaperError
+from app.core.errors import DataNotReadyError, NotFoundError, PaperError
 from app.core.jsonutils import json_safe
 from app.core.logging import logger
 from app.core.paths import PAPER_DIR
@@ -222,7 +222,14 @@ def run_paper_day(
         sync_result = sync_all(run_date)
         failed = [s for s in sync_result.get("steps", []) if not s.get("ok")]
         if failed:
-            logger.warning(f"[paper] {run_date} 数据同步有失败步骤（继续校验）：{failed}")
+            # ★ 任一步失败都不算数（2026-10-10 兜底）：旧行为是 warning 继续跑 ——
+            #   "行情新因子旧"正是数据同步 docstring 点名的头号坑，闸门却只查行情。
+            #   改为整体 failed：job 记 failed + 企微告警 + 次日启动 catch_up 重跑。
+            names = [str(f.get("step") or "?") for f in failed]
+            raise DataNotReadyError(
+                f"数据同步有失败步骤：{'、'.join(names)}。"
+                f"为避免用旧数据算新净值，本次跑批记为失败，次日启动补跑会自动重试。"
+            )
         assert_quotes_ready(run_date)
 
         strategy_name = account.get("strategy") or DEFAULT_STRATEGY

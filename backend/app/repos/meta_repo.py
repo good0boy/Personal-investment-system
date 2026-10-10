@@ -214,6 +214,22 @@ def finish_backtest_run(
     )
 
 
+def job_reap_zombies(older_than_hours: int = 24) -> int:
+    """把卡在 `running` 的过期记录改写为 failed（进程崩溃/断电的收尸）。
+
+    job_start 写入 running、job_finish 改写终态 —— 中间进程没了的话记录
+    永远停在 running，前端会一直显示"正在跑"。启动时跑一次。
+    """
+    db.execute(
+        "UPDATE job_run_log SET status = 'failed', message = 'zombie: 进程重启清理', "
+        "finished_at = datetime('now','localtime') "
+        "WHERE status = 'running' "
+        "AND created_at < datetime('now', 'localtime', ?)",
+        (f"-{int(older_than_hours)} hours",),
+    )
+    return db.query_one("SELECT changes() AS n")["n"]  # type: ignore[no-any-return]
+
+
 def delete_backtest_run(run_id: str) -> None:
     """删除回测运行登记行（产物目录被清理时同步清 DB，避免脏登记残留）。"""
     db.execute("DELETE FROM backtest_run WHERE run_id = ?", (run_id,))

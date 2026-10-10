@@ -34,15 +34,15 @@ baostock 调用（catalog 自检等）会互踢；子进程同时隔离失败 �
 """
 from __future__ import annotations
 
-import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
 from app.core.errors import DataNotReadyError
 from app.core.logging import logger
+from app.core.paths import BACKFILL_STATE_FILE
+from app.core.subprocess_runner import run_with_watchdog
 from app.services import data_store
 
 #: 行情就绪探针：流动性最好的个股 + 择时闸门的指数信号源。
@@ -124,45 +124,46 @@ def assert_quotes_ready(run_date: str) -> None:
 # ======================================================================
 # 子步骤（全部子进程，失败不抛 —— 由最终就绪校验做唯一闸门）
 # ======================================================================
-def _run_step(name: str, cmd: list[str], timeout: int) -> dict[str, Any]:
-    t0 = time.perf_counter()
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(_BACKEND_DIR),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
-        tail = (proc.stdout or "").strip().splitlines()[-3:]
-        ok = proc.returncode == 0
-        logger.info(f"[data_sync] {name}：{'ok' if ok else 'FAILED'}（{time.perf_counter() - t0:.0f}s）")
-        return {
-            "step": name,
-            "ok": ok,
-            "returncode": proc.returncode,
-            "cost_seconds": round(time.perf_counter() - t0, 1),
-            "tail": tail,
-        }
-    except subprocess.TimeoutExpired:
-        logger.warning(f"[data_sync] {name} 超时（>{timeout}s）")
-        return {"step": name, "ok": False, "timeout": True,
-                "cost_seconds": round(time.perf_counter() - t0, 1)}
-    except Exception as exc:
-        logger.warning(f"[data_sync] {name} 异常：{exc!r}")
-        return {"step": name, "ok": False, "error": repr(exc),
-                "cost_seconds": round(time.perf_counter() - t0, 1)}
+def _run_step(
+    name: str,
+    cmd: list[str],
+    timeout: int,
+    *,
+    progress_files: tuple[Path, ...] = (),
+    stall_limit: float | None = None,
+) -> dict[str, Any]:
+    """跑一个补数子步骤（带整体超时 + 进度看门狗）。
+
+    停滞判定（2026-10-10 兜底新增）：baostock/akshare 挂死时进程活着但不写
+    任何文件 —— 状态文件 mtime 就是天然心跳，停滞超过 stall_limit 判挂死杀掉。
+    返回与旧版 step dict 同构（+ timeout/stalled 标记），不抛异常。
+    """
+    out = run_with_watchdog(
+        cmd,
+        cwd=str(_BACKEND_DIR),
+        timeout=timeout,
+        name=name,
+        progress_files=progress_files,
+        stall_limit=stall_limit,
+        tail_lines=5,
+    )
+    # step dict 键名兼容（旧字段 "step"，watchdog 返回 "name"）
+    out["step"] = out.pop("name", name)
+    return out
 
 
 def sync_quotes_incremental() -> dict[str, Any]:
-    """增量回补行情（个股 + 指数，`tools.backfill_quotes --incremental`）。"""
+    """增量回补行情（个股 + 指数，`tools.backfill_quotes --incremental`）。
+
+    进度心跳 = `data/meta/backfill_state.json`（工具每 10 只落盘一次，
+    单只一请求通常秒级）→ 停滞 15 分钟判定挂死杀掉重报，不再干等 90 分钟超时。
+    """
     return _run_step(
         "行情增量回补",
         [sys.executable, "-m", "tools.backfill_quotes", "--incremental"],
         _QUOTES_TIMEOUT,
+        progress_files=(BACKFILL_STATE_FILE,),
+        stall_limit=15 * 60,
     )
 
 

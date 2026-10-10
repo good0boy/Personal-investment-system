@@ -285,3 +285,42 @@ def _force_last_success(job_id: str, day: str | None) -> None:
     import app.scheduler.jobs as m
 
     m.meta_repo.job_last_success_date = lambda jid: day if jid == job_id else None
+
+
+# ======================================================================
+# 兜底（2026-10-10）：fundamental_weekly 失败必须抛（此前被 job 层吞成 success）
+# ======================================================================
+def test_fundamental_weekly_failure_raises(jobs_env, monkeypatch):
+    """★ 子进程 ok=False（超时/停滞/rc≠0）→ AppError → job 记 failed + 企微告警。
+
+    旧实现返回 {"ok": False} 不抛 —— _run_with_log 只看异常，
+    一周基本面静默缺失、企微零感知（调研确认的缺口）。
+    """
+    from app.core.errors import AppError
+    from app.core.subprocess_runner import run_with_watchdog as _real
+
+    def _fake_fail(*args, **kwargs):
+        return {"name": "基本面周频回补", "ok": False, "stalled": True,
+                "reason": "进度停滞超过 1800s（挂死特征）", "cost_seconds": 1801.0,
+                "tail": ["..."]}
+
+    monkeypatch.setattr("app.core.subprocess_runner.run_with_watchdog", _fake_fail)
+    # jobs.py 里是函数内 import（from ... import run_with_watchdog）→ 必须打补丁在源头模块，
+    # 函数内 import 每次都从模块取属性，源头替换即可生效。
+
+    with pytest.raises(AppError) as ei:
+        jobs.fundamental_weekly_job("2026-10-12", trigger_type="manual")
+
+    msg = str(ei.value.message if hasattr(ei.value, "message") else ei.value)
+    assert "基本面周频回补失败" in msg
+    assert "停滞" in msg
+
+    # 成功路径不受影响
+    monkeypatch.setattr(
+        "app.core.subprocess_runner.run_with_watchdog",
+        lambda *a, **k: {"name": "基本面周频回补", "ok": True, "returncode": 0,
+                          "cost_seconds": 1.0, "tail": []},
+    )
+    res = jobs.fundamental_weekly_job("2026-10-12", trigger_type="manual")
+    assert res["ok"] is True and res["mode"] == "force_full"
+    assert _real is not None  # 占位引用（保持导入一致性）
