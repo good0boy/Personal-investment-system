@@ -134,7 +134,13 @@ def prepare_quotes(
 # ======================================================================
 # 单个因子
 # ======================================================================
-def compute_one(defn: loader.FactorDef, q: pd.DataFrame, stats: dict[str, Any]) -> dict[str, Any]:
+def compute_one(
+    defn: loader.FactorDef,
+    q: pd.DataFrame,
+    stats: dict[str, Any],
+    *,
+    args_skip_gate: bool = False,
+) -> dict[str, Any]:
     """计算并落盘一个因子，返回清单条目。异常由调用方处理（不在这里吞掉）。"""
     fn = loader.resolve_impl(defn)
     t0 = time.monotonic()
@@ -158,6 +164,24 @@ def compute_one(defn: loader.FactorDef, q: pd.DataFrame, stats: dict[str, Any]) 
             "value": pd.to_numeric(values, errors="coerce").to_numpy(dtype="float64"),
         }
     )
+    # ★ 残缺行情闸门（2026-10-10）：daily 因子逐日校验当日行情覆盖数。
+    #   残缺日（部分回补/数据源故障，如 09-18/10-08 两次事故）写进因子文件 =
+    #   策略打分用残缺截面，且增量模式下"产物已覆盖"会**永久跳过重算**。
+    #   宁可这里失败（job failed + 告警），也不落脏因子。
+    if defn.category == "daily" and not frame.empty and not args_skip_gate:
+        from app.core.config import settings  # noqa: PLC0415
+
+        min_sym = int(settings.data_sync.min_daily_symbols)
+        day_counts = frame.groupby(frame["date"].astype(str).str[:10])["symbol"].nunique()
+        dirty = sorted(day_counts[day_counts < min_sym].index)
+        if dirty:
+            raise AppError(
+                f"因子 {defn.name} 拒绝写入：这些日期的行情覆盖不足 "
+                f"（< {min_sym} 只）：{', '.join(dirty[:5])}"
+                f"{' …' if len(dirty) > 5 else ''}。"
+                f"先补齐行情（backfill_quotes --incremental）再重算因子。"
+            )
+
     written = data_store.save_factor(defn.name, frame, defn.category)
 
     non_null = int(frame["value"].notna().sum())
@@ -320,6 +344,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--start", default=None, help="起始日 YYYY-MM-DD（默认取 config.data.start_date）")
     p.add_argument("--end", default=None, help="结束日 YYYY-MM-DD（默认到今天）")
     p.add_argument("--force", action="store_true", help="忽略已有产物，全部重算")
+    p.add_argument(
+        "--skip-coverage-gate",
+        action="store_true",
+        help="跳过 daily 因子的逐日行情覆盖校验（仅合成数据/试点用，生产禁用）",
+    )
     p.add_argument("--symbols", default=None, help="逗号分隔的标的，⚠️ 调试模式，结论不可用")
     p.add_argument("--analysis", action="store_true", help="算完顺带跑分层回测 + RankIC")
     p.add_argument("--groups", type=int, default=5, help="--analysis 的分组数（默认 5）")

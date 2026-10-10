@@ -766,7 +766,7 @@ def test_compute_one_writes_parquet_and_manifest_entry(
 
     q, stats = calc.prepare_quotes("2024-01-01", "2024-12-31")
     defn = loader.get_factor("ret_5")
-    entry = calc.compute_one(defn, q, stats)
+    entry = calc.compute_one(defn, q, stats, args_skip_gate=True)
 
     path = data_store.factor_path("ret_5", "daily")
     assert path.exists(), "产物文件必须存在"
@@ -796,7 +796,7 @@ def test_compute_one_flags_all_nan(quote_dir, factor_dir, tmp_path, monkeypatch)
         impl="factors.impl.daily.ret_n",
         params={"window": 100000},
     )
-    entry = calc.compute_one(defn, q, stats)
+    entry = calc.compute_one(defn, q, stats, args_skip_gate=True)
     assert entry["non_null"] == 0
     assert any("NaN" in w for w in entry["warnings"])
 
@@ -813,7 +813,7 @@ def test_compute_one_rejects_length_mismatch(quote_dir, factor_dir, tmp_path, mo
 
     monkeypatch.setattr(loader, "resolve_impl", lambda _d: short)
     with pytest.raises(AppError, match="长度"):
-        calc.compute_one(loader.get_factor("ret_5"), q, stats)
+        calc.compute_one(loader.get_factor("ret_5"), q, stats, args_skip_gate=True)
 
 
 def test_compute_one_marks_debug_run(quote_dir, factor_dir, tmp_path, monkeypatch) -> None:
@@ -824,7 +824,7 @@ def test_compute_one_marks_debug_run(quote_dir, factor_dir, tmp_path, monkeypatc
     _patch_manifest(tmp_path, monkeypatch)
     q, stats = calc.prepare_quotes("2024-01-01", "2024-12-31", symbols=["sh.600519"])
     stats["debug_symbols"] = ["sh.600519"]
-    entry = calc.compute_one(loader.get_factor("ret_5"), q, stats)
+    entry = calc.compute_one(loader.get_factor("ret_5"), q, stats, args_skip_gate=True)
     assert entry["debug_symbols"] == ["sh.600519"]
     assert any("调试" in w for w in entry["warnings"])
 
@@ -839,7 +839,7 @@ def test_calc_compute_all_skips_recompute_when_fresh(
     _patch_manifest(tmp_path, monkeypatch)
     q, stats = calc.prepare_quotes("2024-01-01", "2024-12-31")
     defn = loader.get_factor("ret_5")
-    entry = calc.compute_one(defn, q, stats)
+    entry = calc.compute_one(defn, q, stats, args_skip_gate=True)
     manifest.upsert(defn.name, entry)
 
     assert manifest.stale_reasons(defn, entry, start=stats["date_start"], end=stats["date_end"]) == []

@@ -198,6 +198,9 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(f"上市日期就绪：{len(ftd)} 只（{time.monotonic() - t0:.1f}s）")
 
     # 按日分组一次（避免 1600 次全表比对），再逐日建池
+    from app.core.config import settings  # noqa: PLC0415
+
+    min_daily_symbols = int(settings.data_sync.min_daily_symbols)
     by_day = {d.strftime("%Y-%m-%d"): sub for d, sub in quotes.groupby("date", sort=True)}
 
     ok = 0
@@ -213,6 +216,14 @@ def main(argv: list[str] | None = None) -> int:
                 # 日历说这天是交易日，行情里却没有 —— 多为数据没回补到那么新。
                 # 不落盘（免得把"缺数据"伪装成"空池"），只记下来。
                 missing.append(day)
+            elif len(sub["symbol"].unique()) < min_daily_symbols:
+                # ★ 残缺行情闸门（2026-10-10）：部分回补日的快照（如 10-08 的 203 只）
+                #   落盘后没有任何自愈路径 —— 与行情就绪判据同源，拒写。
+                n_sym = len(sub["symbol"].unique())
+                missing.append(
+                    f"{day}（行情仅 {n_sym} 只 < {min_daily_symbols}，残缺拒写）"
+                )
+                logger.warning(f"{day} 快照拒写：行情覆盖不足（残缺日）")
             else:
                 res = build_universe(
                     day,

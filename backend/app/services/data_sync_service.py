@@ -230,13 +230,24 @@ def sync_all(run_date: str) -> dict[str, Any]:
         )
         steps.append(_safe("行情增量回补", sync_quotes_incremental))
 
-    # 2) 股票池快照（秒级；幂等）
-    if settings.data_sync.sync_universe:
-        steps.append(_safe(f"股票池快照 {run_date}", sync_universe, run_date))
+    # 2)/3) 依赖行情 —— 行情步失败则跳过（短路口径，2026-10-10）：
+    #   残缺行情写出的快照/因子没有任何自愈路径（增量"已覆盖"跳过），
+    #   白算 10~20 分钟还会落脏数据。调用方（run_paper_day）会因失败步骤整体 raise。
+    quotes_failed = not steps[-1].get("ok", False)
+    if quotes_failed:
+        logger.warning("[data_sync] 行情回补失败 → 跳过快照与因子重算（依赖行情）")
+        steps.append({"step": "股票池快照", "ok": False, "skipped": True,
+                      "reason": "行情回补失败，跳过"})
+        steps.append({"step": "因子重算", "ok": False, "skipped": True,
+                      "reason": "行情回补失败，跳过"})
+    else:
+        # 2) 股票池快照（秒级；幂等）
+        if settings.data_sync.sync_universe:
+            steps.append(_safe(f"股票池快照 {run_date}", sync_universe, run_date))
 
-    # 3) 因子重算（必须在净值重算之前 —— 策略打分读 factor/*.parquet）
-    if settings.data_sync.sync_factors:
-        steps.append(_safe("因子重算", sync_factors))
+        # 3) 因子重算（必须在净值重算之前 —— 策略打分读 factor/*.parquet）
+        if settings.data_sync.sync_factors:
+            steps.append(_safe("因子重算", sync_factors))
 
     # 4) 基本面：只报告陈旧度（全量回补约 9h，不自动）
     steps.append(_safe("基本面陈旧度", lambda: {"ok": True, **fundamental_staleness()}))
