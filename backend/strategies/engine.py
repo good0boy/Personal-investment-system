@@ -1025,7 +1025,15 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     # 主循环
     # ------------------------------------------------------------------
-    def run(self) -> StrategyResult:
+    def run(self, *, final_pending: str = "reject") -> StrategyResult:
+        """跑完整回测区间。
+
+        Args:
+            final_pending: 末日未成交挂单的处理 ——
+                ``"reject"``（默认，回测语义）：丢弃并记 rejected；
+                ``"keep"``（模拟盘增量语义）：保留在 ``self.pending`` ——
+                明天开盘还要执行。**只在 PaperEngine 里用**，回测绝不能传 keep。
+        """
         for day in self.days:
             di = self.market.date_index[day]
             self.di, self.day = di, day
@@ -1061,7 +1069,8 @@ class BacktestEngine:
             self._mark_and_snapshot(di, day)
 
             # 6) 最后一天挂出的单子没有下一个交易日可执行 → 丢弃并记录
-            if day == self.days[-1] and self.pending:
+            #    （模拟盘增量模式传 final_pending="keep"：这些单子明天开盘执行）
+            if final_pending == "reject" and day == self.days[-1] and self.pending:
                 for o in self.pending:
                     self._record_order(o, day, None, None, "rejected", "回测结束，未及成交")
                 self.pending = []
@@ -1095,6 +1104,45 @@ class BacktestEngine:
             f"期末总资产 ¥{self.total_asset:,.0f}"
         )
         return result
+
+    # ------------------------------------------------------------------
+    # 跨日状态导出（模拟盘增量撮合用；全量模式不消费）
+    # ------------------------------------------------------------------
+    def export_state(self) -> dict[str, Any]:
+        """当日收盘后的跨日状态（paper_service 原子写 `state.json`）。
+
+        只存**日期**不存矩阵行索引 —— entry_idx/signal_idx 是窗口相对的，
+        每天窗口在变，载入侧用当日矩阵的 `date_index` 重算。
+        """
+        return {
+            "version": 1,
+            "as_of": self.day,
+            "cash": float(self.cash),
+            "positions": [
+                {
+                    "symbol": p.symbol,
+                    "shares": int(p.shares),
+                    "entry_date": p.entry_date,
+                    "entry_price": float(p.entry_price),
+                    "entry_cost": float(p.entry_cost),
+                    "entry_reason": p.entry_reason,
+                }
+                for p in self.positions.values()
+            ],
+            "last_sell_date": dict(self.last_sell_date),
+            "pending": [
+                {
+                    "signal_date": o.signal_date,
+                    "symbol": o.symbol,
+                    "side": o.side,
+                    "reason": o.reason,
+                    "target_amount": o.target_amount,
+                    "shares": o.shares,
+                    "retries": int(o.retries),
+                }
+                for o in self.pending
+            ],
+        }
 
     # ------------------------------------------------------------------
     def _set_total_asset(self, di: int) -> None:

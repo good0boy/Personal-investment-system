@@ -39,6 +39,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from datetime import datetime
@@ -63,12 +64,14 @@ from app.services.data_sync_service import (  # noqa: F401 - 再导出保持旧 
     sync_quotes_incremental,
 )
 from strategies.base import (
+    EQUITY_COLUMNS,
     ORDER_COLUMNS,
     POSITION_COLUMNS,
     TRADE_COLUMNS,
     ensure_contract,
 )
 from strategies.engine import BacktestEngine
+from strategies.paper_engine import PaperEngine
 from strategies.registry import get_strategy
 from strategies.runner import PREHEAT_START
 
@@ -141,12 +144,45 @@ def _invalidate_paper_artifacts(account_id: str) -> int:
     removed = 0
     if not d.exists():
         return 0
-    for name in ("nav.parquet", "positions.parquet", "trades.parquet", "orders.parquet", "config.json"):
+    for name in (
+        "nav.parquet", "positions.parquet", "trades.parquet",
+        "orders.parquet", "config.json", STATE_FILE,
+    ):
         f = d / name
         if f.exists():
             f.unlink()
             removed += 1
     return removed
+
+
+# ======================================================================
+# 跨日状态（state.json）—— 增量撮合的续跑依据
+# ======================================================================
+STATE_FILE = "state.json"
+
+
+def _load_state(account_id: str) -> dict[str, Any] | None:
+    """读跨日状态；不存在/损坏返回 None（调用方回退全量重建）。"""
+    path = account_dir(account_id) / STATE_FILE
+    if not path.exists():
+        return None
+    try:
+        st = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(st, dict) or not st.get("as_of"):
+            raise ValueError("state 缺少 as_of")
+        return st
+    except Exception as exc:  # 损坏 = 回退全量
+        logger.warning(f"[paper] state.json 读取失败（将回退全量重建）：{exc!r}")
+        return None
+
+
+def _save_state(account_id: str, state: dict[str, Any]) -> None:
+    """原子写跨日状态（tmp + os.replace，与 parquet 同纪律）。"""
+    path = account_dir(account_id) / STATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".tmp{os.getpid()}")
+    tmp.write_text(json.dumps(json_safe(state), ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def require_account(account_id: str) -> dict[str, Any]:
@@ -185,10 +221,17 @@ def run_paper_day(
     trigger: str = "manual",
     notify: bool | None = None,
 ) -> dict[str, Any]:
-    """把模拟盘净值更新到 `run_date`（全量重算，幂等）。
+    """把模拟盘净值更新到 `run_date`（幂等；默认单日增量撮合）。
 
     数据流：`sync_all`（行情→快照→因子，覆盖率闸门驱动，缺口夜约 30~80 分钟）
-    → 就绪校验（唯一闸门）→ 引擎重算 → 落盘 → 派发交易提醒。
+    → 就绪校验（唯一闸门）→ 引擎执行 → 落盘 → 派发交易提醒。
+
+    执行模式（`paper.engine_mode`，2026-10-10 主人拍板）：
+    - ``incremental``（默认）：PaperEngine 只撮合 `run_date` 一天，跨日状态
+      存 `state.json`（内存峰值 <500MB、秒级）；state 缺失/损坏/不连续 →
+      **自动回退全量重算**（同一次调用内完成，不会失败）；
+    - ``full``：每晚从 PAPER_START_DATE 全量重算（旧语义，峰值 3.3GB，
+      保留为冷启动/自愈/对拍基线路径）。
 
     Args:
         run_date: 逻辑运行日（净值终点），来自日历的最新已发生交易日。
@@ -240,76 +283,314 @@ def run_paper_day(
         strategy = get_strategy(strategy_name, params)
         init_cash = float(account["init_cash"])
 
-        t0 = time.perf_counter()
-        with data_store.read_until(run_date):
-            engine = BacktestEngine(
-                strategy,
-                start=PAPER_START_DATE,
-                end=run_date,
-                preheat_start=PREHEAT_START,
-                initial_cash=init_cash,
-                max_positions=settings.strategy.max_positions,
-                max_weight_per_stock=settings.strategy.max_weight_per_stock,
-                symbols=None,  # 全市场（与回测同口径）
-                benchmark=settings.strategy.benchmark,
-                listed_days_min=settings.universe.listed_days_min,
-                no_rebuy_days=settings.universe.no_rebuy_days,
-                delist_confirm_days=settings.universe.delist_confirm_days,
-            )
-            result = engine.run()
-        cost_seconds = round(time.perf_counter() - t0, 2)
-
-        equity = metrics_mod.equity_curve(
-            result.equity,
-            initial_cash=init_cash,
-            benchmark=_benchmark_series(PAPER_START_DATE, run_date),
-        )
-        if equity.empty:
-            raise PaperError(
-                f"模拟盘重算结果为空（{PAPER_START_DATE} ~ {run_date}）："
-                f"请确认该区间内有行情数据"
-            )
-
-        summary = _write_artifacts(
-            account_id,
-            equity=equity,
-            result=result,
+        mode = (settings.paper.engine_mode or "full").strip().lower()
+        if mode == "incremental":
+            try:
+                return _run_incremental_day(
+                    account=account,
+                    account_id=account_id,
+                    strategy=strategy,
+                    strategy_name=strategy_name,
+                    init_cash=init_cash,
+                    run_date=run_date,
+                    trigger=trigger,
+                    notify=notify,
+                )
+            except Exception as exc:  # 自愈：增量失败回退全量
+                logger.warning(
+                    f"[paper] {run_date} 增量撮合失败，自动回退全量重算：{exc!r}"
+                )
+        return _run_full_day(
+            account=account,
+            account_id=account_id,
+            strategy=strategy,
+            strategy_name=strategy_name,
+            init_cash=init_cash,
             run_date=run_date,
             trigger=trigger,
-            cost_seconds=cost_seconds,
-            params=dict(strategy.params),
-            strategy_name=strategy_name,
-        )
-        final = equity.iloc[-1]
-        meta_repo.update_paper_run_state(
-            account_id,
-            last_run_date=run_date,
-            cash=float(final.get("cash") or 0.0),
-            status="idle",
-        )
-        logger.info(
-            f"[paper] {account_id} 净值已更新至 {run_date}："
-            f"nav={final.get('nav')}，耗时 {cost_seconds}s（{trigger}）"
-        )
-
-        # ---- 模块 5 · 交易提醒（阶段 5）----
-        # ★ 放在最后、且**不参与 try**：提醒失败绝不回滚已完成的跑批。
-        #   `notify_trades` 内部自己吞掉所有异常，这里再包一层是防"连它也崩"。
-        notify_stats = _dispatch_alerts(
-            account=account,
-            strategy_name=strategy_name,
-            result=result,
-            equity=equity,
-            account_id=account_id,
-            run_date=run_date,
             notify=notify,
-                    entry_candidates=getattr(strategy, "last_entry_candidates", None),
-            max_positions=int(strategy.params.get("max_positions", 10)),
         )
-        summary["alerts"] = notify_stats
-        return summary
     finally:
         _RUN_LOCK.release()
+
+
+def _run_full_day(
+    *,
+    account: dict[str, Any],
+    account_id: str,
+    strategy: Any,
+    strategy_name: str,
+    init_cash: float,
+    run_date: str,
+    trigger: str,
+    notify: bool | None,
+) -> dict[str, Any]:
+    """全量重算路径（冷启动 / state 异常自愈 / 对拍基线）—— 旧语义原样保留。"""
+    t0 = time.perf_counter()
+    with data_store.read_until(run_date):
+        engine = BacktestEngine(
+            strategy,
+            start=PAPER_START_DATE,
+            end=run_date,
+            preheat_start=PREHEAT_START,
+            initial_cash=init_cash,
+            max_positions=settings.strategy.max_positions,
+            max_weight_per_stock=settings.strategy.max_weight_per_stock,
+            symbols=None,  # 全市场（与回测同口径）
+            benchmark=settings.strategy.benchmark,
+            listed_days_min=settings.universe.listed_days_min,
+            no_rebuy_days=settings.universe.no_rebuy_days,
+            delist_confirm_days=settings.universe.delist_confirm_days,
+        )
+        result = engine.run()
+    cost_seconds = round(time.perf_counter() - t0, 2)
+
+    bser = _benchmark_series(PAPER_START_DATE, run_date)
+    equity = metrics_mod.equity_curve(result.equity, initial_cash=init_cash, benchmark=bser)
+    if equity.empty:
+        raise PaperError(
+            f"模拟盘重算结果为空（{PAPER_START_DATE} ~ {run_date}）："
+            f"请确认该区间内有行情数据"
+        )
+
+    summary = _write_artifacts(
+        account_id,
+        equity=equity,
+        result=result,
+        run_date=run_date,
+        trigger=trigger,
+        cost_seconds=cost_seconds,
+        params=dict(strategy.params),
+        strategy_name=strategy_name,
+    )
+    final = equity.iloc[-1]
+    meta_repo.update_paper_run_state(
+        account_id,
+        last_run_date=run_date,
+        cash=float(final.get("cash") or 0.0),
+        status="idle",
+    )
+    # 跨日状态落盘（增量模式的续跑依据）；策略切换作废产物时一并删除
+    benchmark_base = None
+    if bser is not None and not bser.empty:
+        benchmark_base = float(bser.iloc[0])
+    _save_state(
+        account_id,
+        engine.export_state() | {"benchmark_base": benchmark_base, "start_date": PAPER_START_DATE},
+    )
+    logger.info(
+        f"[paper] {account_id} 净值已更新至 {run_date}（全量重算）："
+        f"nav={final.get('nav')}，耗时 {cost_seconds}s（{trigger}）"
+    )
+    return _finish_with_alerts(
+        account=account,
+        account_id=account_id,
+        strategy_name=strategy_name,
+        result=result,
+        equity=equity,
+        run_date=run_date,
+        trigger=trigger,
+        notify=notify,
+        summary=summary,
+        entry_candidates=getattr(engine, "last_entry_candidates", None),
+        max_positions=int(strategy.params.get("max_positions", 10)),
+    )
+
+
+def _run_incremental_day(
+    *,
+    account: dict[str, Any],
+    account_id: str,
+    strategy: Any,
+    strategy_name: str,
+    init_cash: float,
+    run_date: str,
+    trigger: str,
+    notify: bool | None,
+) -> dict[str, Any]:
+    """单日增量撮合路径：载入 T-1 状态 → 只执行 run_date → 追加产物 + 落状态。
+
+    任何状态异常（缺失/损坏/与产物不连续）直接抛 —— 由 run_paper_day 捕获
+    后回退全量重算（同一次调用内完成自愈，跑批不会失败）。
+    """
+    state = _load_state(account_id)
+    if state is None:
+        raise PaperError("缺少 state.json（增量模式冷启动）")
+    done = last_nav_date(account_id)
+    if str(state.get("as_of") or "") != (done or ""):
+        raise PaperError(
+            f"状态不连续：state.as_of={state.get('as_of')} ≠ nav 最后日 {done} —— 需全量重建"
+        )
+
+    t0 = time.perf_counter()
+    with data_store.read_until(run_date):
+        engine = PaperEngine(
+            strategy,
+            run_date=run_date,
+            state=state,
+            initial_cash=init_cash,
+            max_positions=settings.strategy.max_positions,
+            max_weight_per_stock=settings.strategy.max_weight_per_stock,
+            benchmark=settings.strategy.benchmark,
+            listed_days_min=settings.universe.listed_days_min,
+            no_rebuy_days=settings.universe.no_rebuy_days,
+            delist_confirm_days=settings.universe.delist_confirm_days,
+        )
+        result = engine.run_one_day()
+    cost_seconds = round(time.perf_counter() - t0, 2)
+
+    # ---- 当日 equity 行（nav/drawdown/benchmark_nav 增量计算）----
+    if result.equity.empty:
+        raise PaperError(f"增量撮合结果为空（{run_date}）")
+    day_row = dict(result.equity.iloc[-1])
+    day_row["date"] = pd.to_datetime(day_row["date"])
+    new_nav = float(day_row["total_asset"]) / init_cash
+
+    old_nav = pd.read_parquet(account_dir(account_id) / "nav.parquet")
+    cummax_prev = float(old_nav["nav"].max()) if not old_nav.empty else init_cash and 1.0
+    base = state.get("benchmark_base")
+    bnav = None
+    if base:
+        try:
+            bdf = data_store.read_quotes(
+                settings.strategy.benchmark, run_date, run_date,
+                is_index=True, columns=["close"],
+            )
+            if not bdf.empty:
+                bnav = float(bdf["close"].iloc[0]) / float(base)
+        except Exception as exc:  # 基准缺失不阻塞（与 equity_curve NA 行为一致）
+            logger.warning(f"[paper] 基准指数读取失败（{run_date}）：{exc!r}")
+    day_row.update(
+        {
+            "nav": new_nav,
+            "drawdown": (new_nav / cummax_prev - 1.0) if cummax_prev > 0 else 0.0,
+            "benchmark_nav": bnav,
+        }
+    )
+    equity = pd.concat([old_nav, pd.DataFrame([day_row])], ignore_index=True)
+    equity = equity[list(EQUITY_COLUMNS)]
+
+    # ---- 追加其余产物（原子覆写；行数 = 全历史 + 1，读写开销可忽略）----
+    pdir = account_dir(account_id)
+    old_trades = pd.read_parquet(pdir / "trades.parquet")
+    old_positions = pd.read_parquet(pdir / "positions.parquet")
+    old_orders = pd.read_parquet(pdir / "orders.parquet")
+    trades = ensure_contract(
+        pd.concat([old_trades, result.trades], ignore_index=True), TRADE_COLUMNS
+    )
+    positions = ensure_contract(
+        pd.concat([old_positions, result.positions], ignore_index=True), POSITION_COLUMNS
+    )
+    orders = ensure_contract(
+        pd.concat([old_orders, result.orders], ignore_index=True), ORDER_COLUMNS
+    )
+    data_store.write_parquet(equity, pdir / "nav.parquet", allow_empty=True)
+    data_store.write_parquet(trades, pdir / "trades.parquet", allow_empty=True)
+    data_store.write_parquet(positions, pdir / "positions.parquet", allow_empty=True)
+    data_store.write_parquet(orders, pdir / "orders.parquet", allow_empty=True)
+
+    # ---- config.json：全期指标重算（nav/trades 已是完整历史）----
+    metrics = metrics_mod.compute_metrics(equity, trades, initial_cash=init_cash)
+    config = {
+        "account_id": account_id,
+        "strategy": strategy_name,
+        "params": dict(strategy.params),
+        "start_date": state.get("start_date") or PAPER_START_DATE,
+        "data_as_of": run_date,
+        "init_cash": init_cash,
+        "cost_settings": settings.cost.model_dump(),
+        "universe_settings": {
+            "listed_days_min": settings.universe.listed_days_min,
+            "no_rebuy_days": settings.universe.no_rebuy_days,
+            "delist_confirm_days": settings.universe.delist_confirm_days,
+        },
+        "trigger": trigger,
+        "cost_seconds": cost_seconds,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+        "metrics": metrics,
+        "engine_mode": "incremental",
+        "note": (
+            "模拟盘 = quality_reversal（oosma10-base 口径：MA10 上行确认 + 全门开启）"
+            "单日增量撮合。⚠️ 该配置无干净样本外佐证（参数在看过牛市OOS 结果后选定，"
+            "规格书 §7.15），且本质是「低波+低换+低动+高成长」beta 组合（§7.13）；"
+            "本产物用于仿真跟踪，不代表盈利能力。"
+            if strategy_name == "quality_reversal"
+            else None
+        ),
+    }
+    (pdir / "config.json").write_text(
+        json.dumps(json_safe(config), ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+    # ---- 跨日状态落盘 ----
+    _save_state(account_id, engine.export_state() | {"benchmark_base": base})
+    meta_repo.update_paper_run_state(
+        account_id,
+        last_run_date=run_date,
+        cash=float(day_row["cash"] or 0.0),
+        status="idle",
+    )
+    logger.info(
+        f"[paper] {account_id} 净值已更新至 {run_date}（增量撮合）："
+        f"nav={new_nav:.4f}，耗时 {cost_seconds}s（{trigger}）"
+    )
+    return _finish_with_alerts(
+        account=account,
+        account_id=account_id,
+        strategy_name=strategy_name,
+        result=result,
+        equity=equity,
+        run_date=run_date,
+        trigger=trigger,
+        notify=notify,
+        summary={
+            "account_id": account_id,
+            "data_as_of": run_date,
+            "nav": new_nav,
+            "total_asset": float(day_row["total_asset"]),
+            "position_count": int(day_row.get("position_count") or 0),
+            "trade_count": len(result.trades),
+            "engine_mode": "incremental",
+            "cost_seconds": cost_seconds,
+            "trigger": trigger,
+        },
+        entry_candidates=getattr(engine, "last_entry_candidates", None),
+        max_positions=int(strategy.params.get("max_positions", 10)),
+    )
+
+
+def _finish_with_alerts(
+    *,
+    account: dict[str, Any],
+    account_id: str,
+    strategy_name: str,
+    result: Any,
+    equity: pd.DataFrame,
+    run_date: str,
+    trigger: str,
+    notify: bool | None,
+    summary: dict[str, Any],
+    entry_candidates: dict[str, Any] | None,
+    max_positions: int,
+) -> dict[str, Any]:
+    """交易提醒派发（跑批收尾，与执行模式无关）。
+
+    ★ 放在最后、且**不参与 try**：提醒失败绝不回滚已完成的跑批。
+    """
+    notify_stats = _dispatch_alerts(
+        account=account,
+        strategy_name=strategy_name,
+        result=result,
+        equity=equity,
+        account_id=account_id,
+        run_date=run_date,
+        notify=notify,
+        entry_candidates=entry_candidates,
+        max_positions=max_positions,
+    )
+    summary["alerts"] = notify_stats
+    return summary
 
 
 def _dispatch_alerts(

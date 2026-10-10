@@ -351,6 +351,11 @@ class PaperConfig(BaseModel):
     strategy: str = ""
     #: 随切换一起写入账户行的参数（oosma10-base 口径显式固化，防默认值漂移）。
     params: dict[str, Any] | None = None
+    #: 跑批执行模式（2026-10-10 主人拍板）：
+    #:   ``full``        每晚从 PAPER_START_DATE 全量重算（旧语义，峰值内存 3.3GB）
+    #:   ``incremental`` 单日增量撮合（PaperEngine，峰值 <500MB；state.json 跨日续状态；
+    #:                   state 缺失/损坏/不连续 → 自动回退全量重建）
+    engine_mode: str = "full"
 
 
 class DataSyncConfig(BaseModel):

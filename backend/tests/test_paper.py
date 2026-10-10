@@ -178,14 +178,32 @@ def test_run_paper_day_full_pipeline(paper_env: Path) -> None:
 
 
 @pytest.mark.usefixtures("_close_db_after")
-def test_run_paper_day_second_run_overwrites(paper_env: Path) -> None:
-    """再跑一个更晚的日期 → 整体覆盖（全量重算的语义）。"""
-    paper_service.run_paper_day("2024-03-29")
-    paper_service.run_paper_day("2024-06-28")
+def test_run_paper_day_second_run_appends_incrementally(paper_env: Path) -> None:
+    """★ 增量撮合语义（2026-10-10）：首跑全量（冷启动写 state）→ 再跑更晚日期
+    = 当日追加一行，历史行不动；state.as_of 与 nav 最后日保持连续。"""
+    paper_service.run_paper_day("2024-03-29")   # 冷启动：state 不存在 → 自动全量
     out = paper_env / "default"
-    nav = data_store.query_duck(f"SELECT * FROM read_parquet('{(out / 'nav.parquet').as_posix()}')")
-    assert str(nav["date"].max())[:10] == "2024-06-28"
-    assert len(nav) == 6  # 覆盖而非追加
+    assert (out / "state.json").exists(), "全量跑批必须落 state.json（增量续跑依据）"
+    nav1 = data_store.query_duck(
+        f"SELECT * FROM read_parquet('{(out / 'nav.parquet').as_posix()}')"
+    )
+    n1 = len(nav1)
+
+    paper_service.run_paper_day("2024-06-28")   # state 连续 → 增量撮合
+    nav2 = data_store.query_duck(
+        f"SELECT * FROM read_parquet('{(out / 'nav.parquet').as_posix()}')"
+    )
+    assert str(nav2["date"].max())[:10] == "2024-06-28"
+    assert len(nav2) == n1 + 1, "增量模式 = 追加一行，历史行不动"
+    # 历史行逐位未变（追加语义的硬要求）
+    import pandas as pd
+
+    pd.testing.assert_frame_equal(
+        nav1.reset_index(drop=True), nav2.iloc[:n1].reset_index(drop=True)
+    )
+    # state 连续性
+    state = json.loads((out / "state.json").read_text(encoding="utf-8"))
+    assert state["as_of"] == "2024-06-28"
 
 
 # ======================================================================

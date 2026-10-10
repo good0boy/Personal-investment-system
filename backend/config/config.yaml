@@ -234,6 +234,10 @@ paper:
   # ★ 模拟盘策略（2026-10-09 主人拍板）：切换为 quality_reversal 的 oosma10-base 口径，
   #   原 momentum 仿真下线。策略变化会触发全量重算（净值曲线整体重写，设计使然）。
   strategy: quality_reversal
+  # 跑批执行模式（2026-10-10 主人拍板）：incremental = 单日增量撮合
+  # （内存 <500MB / 秒级；state.json 跨日续状态；异常自动回退全量重建）。
+  # 回退开关：改回 full 即恢复每晚全量重算（旧语义）。
+  engine_mode: incremental
   # oosma10-base 参数显式固化（未列出的键用策略默认）；变更后重启服务生效
   params:
     max_positions: 10
