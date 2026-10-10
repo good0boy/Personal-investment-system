@@ -178,9 +178,27 @@ def test_run_paper_day_full_pipeline(paper_env: Path) -> None:
 
 
 @pytest.mark.usefixtures("_close_db_after")
-def test_run_paper_day_second_run_appends_incrementally(paper_env: Path) -> None:
+def test_run_paper_day_second_run_appends_incrementally(
+    paper_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """★ 增量撮合语义（2026-10-10）：首跑全量（冷启动写 state）→ 再跑更晚日期
-    = 当日追加一行，历史行不动；state.as_of 与 nav 最后日保持连续。"""
+    = **逐日补齐**（缺口感知），历史行不动；state.as_of 与 nav 最后日连续。
+
+    日历 monkeypatch 成夹具口径（每月最后一个交易日）—— 真实日历与夹具
+    稀疏数据不同轴，不 mock 会触发"回退全量"（那是另一条自愈路径，由
+    test_incremental_falls_back_on_calendar_gap 单独验证）。
+    """
+    from tests.conftest import SAMPLE_DATES
+
+    monkeypatch.setattr(
+        paper_service.calendar, "trading_days",
+        lambda s, e: [d for d in SAMPLE_DATES if s <= d <= e],
+    )
+    monkeypatch.setattr(
+        paper_service.calendar, "next_trading_day",
+        lambda d, n=1: next(x for x in SAMPLE_DATES if x > d),
+    )
+
     paper_service.run_paper_day("2024-03-29")   # 冷启动：state 不存在 → 自动全量
     out = paper_env / "default"
     assert (out / "state.json").exists(), "全量跑批必须落 state.json（增量续跑依据）"
@@ -189,19 +207,36 @@ def test_run_paper_day_second_run_appends_incrementally(paper_env: Path) -> None
     )
     n1 = len(nav1)
 
-    paper_service.run_paper_day("2024-06-28")   # state 连续 → 增量撮合
+    paper_service.run_paper_day("2024-06-28")   # 中间隔 04-30、05-31 两个未撮合日
     nav2 = data_store.query_duck(
         f"SELECT * FROM read_parquet('{(out / 'nav.parquet').as_posix()}')"
     )
     assert str(nav2["date"].max())[:10] == "2024-06-28"
-    assert len(nav2) == n1 + 1, "增量模式 = 追加一行，历史行不动"
+    assert len(nav2) == n1 + 3, "增量逐日补齐：+3 行（04-30 / 05-31 / 06-28），历史行不动"
     # 历史行逐位未变（追加语义的硬要求）
-    import pandas as pd
-
     pd.testing.assert_frame_equal(
         nav1.reset_index(drop=True), nav2.iloc[:n1].reset_index(drop=True)
     )
     # state 连续性
+    state = json.loads((out / "state.json").read_text(encoding="utf-8"))
+    assert state["as_of"] == "2024-06-28"
+
+
+def test_incremental_falls_back_on_calendar_gap(
+    paper_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ 自愈路径：真实日历下中间日无夹具数据（跨多日 + 数据缺失）→
+    增量撮合抛错 → 自动回退全量重算，跑批不失败、产物完整。"""
+    # 不 mock 日历：03-29 → 06-28 之间是真实交易日，但夹具行情只有每月一天
+    # → PaperEngine 起点日无数据 → 异常 → 回退全量
+    paper_service.run_paper_day("2024-03-29")
+    paper_service.run_paper_day("2024-06-28")
+    out = paper_env / "default"
+    nav = data_store.query_duck(
+        f"SELECT * FROM read_parquet('{(out / 'nav.parquet').as_posix()}')"
+    )
+    assert str(nav["date"].max())[:10] == "2024-06-28"
+    assert len(nav) == 6, "回退全量 = 整段重算（6 个夹具交易日）"
     state = json.loads((out / "state.json").read_text(encoding="utf-8"))
     assert state["as_of"] == "2024-06-28"
 

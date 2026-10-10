@@ -422,67 +422,99 @@ def _run_incremental_day(
             f"状态不连续：state.as_of={state.get('as_of')} ≠ nav 最后日 {done} —— 需全量重建"
         )
 
-    t0 = time.perf_counter()
-    with data_store.read_until(run_date):
-        engine = PaperEngine(
-            strategy,
-            run_date=run_date,
-            state=state,
-            initial_cash=init_cash,
-            max_positions=settings.strategy.max_positions,
-            max_weight_per_stock=settings.strategy.max_weight_per_stock,
-            benchmark=settings.strategy.benchmark,
-            listed_days_min=settings.universe.listed_days_min,
-            no_rebuy_days=settings.universe.no_rebuy_days,
-            delist_confirm_days=settings.universe.delist_confirm_days,
+    # ★ 缺口感知（2026-10-10 修复）：从 as_of 的下一交易日**逐日**补到 run_date。
+    #   旧实现只跑 run_date 一天 —— 若连续多日没跑批（服务停机/任务失败），
+    #   中间日期会永久缺失，且幂等闸（done>=run_date skip）再也拦不回来。
+    #   逐日循环后，跑批天然自愈：跑 T 日会自动把 T-1 的缺口一起补上。
+    start_day = calendar.next_trading_day(str(state.get("as_of")), n=1)
+    days_to_run = calendar.trading_days(start_day, run_date)
+    if not days_to_run:
+        raise PaperError(
+            f"{state.get('as_of')} 的下一交易日到 {run_date} 之间没有交易日 —— 需全量重建"
         )
-        result = engine.run_one_day()
+    if len(days_to_run) > 1:
+        logger.info(
+            f"[paper] 检测到 {len(days_to_run)} 个未撮合交易日"
+            f"（{days_to_run[0]} ~ {days_to_run[-1]}），逐日补齐"
+        )
+
+    t0 = time.perf_counter()
+    pdir = account_dir(account_id)
+    old_nav = pd.read_parquet(pdir / "nav.parquet")
+    cummax = float(old_nav["nav"].max()) if not old_nav.empty else 1.0
+    base = state.get("benchmark_base")
+
+    eq_parts: list[pd.DataFrame] = []
+    trade_parts: list[pd.DataFrame] = []
+    pos_parts: list[pd.DataFrame] = []
+    order_parts: list[pd.DataFrame] = []
+    result = None
+    engine = None
+    with data_store.read_until(run_date):
+        for day in days_to_run:
+            engine = PaperEngine(
+                strategy,
+                run_date=day,
+                state=state,
+                initial_cash=init_cash,
+                max_positions=settings.strategy.max_positions,
+                max_weight_per_stock=settings.strategy.max_weight_per_stock,
+                benchmark=settings.strategy.benchmark,
+                listed_days_min=settings.universe.listed_days_min,
+                no_rebuy_days=settings.universe.no_rebuy_days,
+                delist_confirm_days=settings.universe.delist_confirm_days,
+            )
+            result = engine.run_one_day()
+            if result.equity.empty:
+                raise PaperError(f"增量撮合结果为空（{day}）")
+
+            day_row = dict(result.equity.iloc[-1])
+            day_row["date"] = pd.to_datetime(day_row["date"])
+            new_nav = float(day_row["total_asset"]) / init_cash
+            cummax = max(cummax, new_nav)
+
+            bnav = None
+            if base:
+                try:
+                    bdf = data_store.read_quotes(
+                        settings.strategy.benchmark, day, day,
+                        is_index=True, columns=["close"],
+                    )
+                    if not bdf.empty:
+                        bnav = float(bdf["close"].iloc[0]) / float(base)
+                except Exception as exc:  # 基准缺失不阻塞（与 equity_curve NA 行为一致）
+                    logger.warning(f"[paper] 基准指数读取失败（{day}）：{exc!r}")
+            day_row.update(
+                {
+                    "nav": new_nav,
+                    "drawdown": (new_nav / cummax - 1.0) if cummax > 0 else 0.0,
+                    "benchmark_nav": bnav,
+                }
+            )
+            eq_parts.append(pd.DataFrame([day_row]))
+            trade_parts.append(result.trades)
+            pos_parts.append(result.positions)
+            order_parts.append(result.orders)
+            state = engine.export_state()   # 当日状态滚入次日
+
     cost_seconds = round(time.perf_counter() - t0, 2)
 
-    # ---- 当日 equity 行（nav/drawdown/benchmark_nav 增量计算）----
-    if result.equity.empty:
-        raise PaperError(f"增量撮合结果为空（{run_date}）")
-    day_row = dict(result.equity.iloc[-1])
-    day_row["date"] = pd.to_datetime(day_row["date"])
-    new_nav = float(day_row["total_asset"]) / init_cash
-
-    old_nav = pd.read_parquet(account_dir(account_id) / "nav.parquet")
-    cummax_prev = float(old_nav["nav"].max()) if not old_nav.empty else init_cash and 1.0
-    base = state.get("benchmark_base")
-    bnav = None
-    if base:
-        try:
-            bdf = data_store.read_quotes(
-                settings.strategy.benchmark, run_date, run_date,
-                is_index=True, columns=["close"],
-            )
-            if not bdf.empty:
-                bnav = float(bdf["close"].iloc[0]) / float(base)
-        except Exception as exc:  # 基准缺失不阻塞（与 equity_curve NA 行为一致）
-            logger.warning(f"[paper] 基准指数读取失败（{run_date}）：{exc!r}")
-    day_row.update(
-        {
-            "nav": new_nav,
-            "drawdown": (new_nav / cummax_prev - 1.0) if cummax_prev > 0 else 0.0,
-            "benchmark_nav": bnav,
-        }
-    )
-    equity = pd.concat([old_nav, pd.DataFrame([day_row])], ignore_index=True)
-    equity = equity[list(EQUITY_COLUMNS)]
-
-    # ---- 追加其余产物（原子覆写；行数 = 全历史 + 1，读写开销可忽略）----
-    pdir = account_dir(account_id)
-    old_trades = pd.read_parquet(pdir / "trades.parquet")
-    old_positions = pd.read_parquet(pdir / "positions.parquet")
-    old_orders = pd.read_parquet(pdir / "orders.parquet")
+    # ---- 追加产物（一次性原子覆写；行数 = 全历史 + N，读写开销可忽略）----
+    equity = pd.concat([old_nav, *eq_parts], ignore_index=True)[list(EQUITY_COLUMNS)]
     trades = ensure_contract(
-        pd.concat([old_trades, result.trades], ignore_index=True), TRADE_COLUMNS
+        pd.concat([pd.read_parquet(pdir / "trades.parquet"), *trade_parts],
+                  ignore_index=True),
+        TRADE_COLUMNS,
     )
     positions = ensure_contract(
-        pd.concat([old_positions, result.positions], ignore_index=True), POSITION_COLUMNS
+        pd.concat([pd.read_parquet(pdir / "positions.parquet"), *pos_parts],
+                  ignore_index=True),
+        POSITION_COLUMNS,
     )
     orders = ensure_contract(
-        pd.concat([old_orders, result.orders], ignore_index=True), ORDER_COLUMNS
+        pd.concat([pd.read_parquet(pdir / "orders.parquet"), *order_parts],
+                  ignore_index=True),
+        ORDER_COLUMNS,
     )
     data_store.write_parquet(equity, pdir / "nav.parquet", allow_empty=True)
     data_store.write_parquet(trades, pdir / "trades.parquet", allow_empty=True)
@@ -524,16 +556,17 @@ def _run_incremental_day(
     )
 
     # ---- 跨日状态落盘 ----
-    _save_state(account_id, engine.export_state() | {"benchmark_base": base})
+    _save_state(account_id, state | {"benchmark_base": base})
+    last_row = eq_parts[-1].iloc[-1]
     meta_repo.update_paper_run_state(
         account_id,
         last_run_date=run_date,
-        cash=float(day_row["cash"] or 0.0),
+        cash=float(last_row.get("cash") or 0.0),
         status="idle",
     )
     logger.info(
-        f"[paper] {account_id} 净值已更新至 {run_date}（增量撮合）："
-        f"nav={new_nav:.4f}，耗时 {cost_seconds}s（{trigger}）"
+        f"[paper] {account_id} 净值已更新至 {run_date}（增量撮合，补齐 {len(days_to_run)} 日）："
+        f"nav={float(last_row['total_asset']) / init_cash:.4f}，耗时 {cost_seconds}s（{trigger}）"
     )
     return _finish_with_alerts(
         account=account,
@@ -547,10 +580,11 @@ def _run_incremental_day(
         summary={
             "account_id": account_id,
             "data_as_of": run_date,
-            "nav": new_nav,
-            "total_asset": float(day_row["total_asset"]),
-            "position_count": int(day_row.get("position_count") or 0),
-            "trade_count": len(result.trades),
+            "days_run": len(days_to_run),
+            "nav": float(last_row["total_asset"]) / init_cash,
+            "total_asset": float(last_row["total_asset"]),
+            "position_count": int(last_row.get("position_count") or 0),
+            "trade_count": sum(len(t) for t in trade_parts),
             "engine_mode": "incremental",
             "cost_seconds": cost_seconds,
             "trigger": trigger,
