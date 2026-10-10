@@ -387,30 +387,30 @@ def catch_up_missing_days(job_id: str, *, max_days: int | None = None) -> dict[s
 
 
 # ======================================================================
-# 任务 5：基本面/财务周频回补（每周一 21:00，主人 2026-10-10 拍板）
+# 任务 5：基本面/财务周频回补（每周一 06:00，主人 2026-10-10 拍板）
 # ======================================================================
-#: 逐只数据集的轮转窗口（天）：稳态下每周重拉 ~1/4 市场，季报滞后 ≤4 周
-_FUNDAMENTAL_STALE_DAYS = 30
-#: 子进程超时：首跑全量 ~9h 是在本地实测的；周频增量稳态 ~2-3h。
-#: 周一 21:00 + 4h 上限 = 凌晨 1:00 前结束，不会拖到早报（08:00）。
-_FUNDAMENTAL_TIMEOUT = 4 * 60 * 60
+#: 子进程超时：全量补完 ~9h（本地实测）；服务器 IO 更慢留余量。
+#: 周一 06:00 + 12h 上限 = 18:00 前结束，不与 23:00 paper_daily 重叠。
+_FUNDAMENTAL_TIMEOUT = 12 * 60 * 60
 
 
 @register_job("fundamental_weekly", "基本面/财务周频回补")
 def fundamental_weekly_job(run_date: str, *, trigger_type: str = "manual") -> dict[str, Any]:
-    """每周一 21:00 回补基本面/财务数据（`tools.backfill_fundamental`）。
+    """每周一 06:00 一次性补完基本面/财务数据（`tools.backfill_fundamental --force`）。
 
-    设计：
+    设计（2026-10-10 主人拍板：一次性补完、接受长时间运行）：
     - **子进程**运行 —— akshare 会话与主进程隔离，状态文件断点续传
       （`data/meta/backfill_fundamental_state.json`），中断重跑即续上；
-    - `--stale-days 30` 增量轮转：稳态每周重拉 ~1/4 市场的逐只数据集
-      （三大报表/财务指标），批量数据集（业绩报表/预告/股东户数/分红/
-      基金持仓）按报告期自动补新季报；
+    - **`--force` 全量重拉**：三大报表/财务指标接口只能全量分页拉取（20~25 页/次），
+      东财没有"是否有新数据"的廉价探测接口 —— 无法做到"没有就不拉"。
+      落盘 `save_fundamental` 按 [report_date, notice_date] 去重：
+      **数据效果 = 有更新则补上、没有则不变**（操作上是全量，结果上是增量）；
+    - 批量数据集（业绩报表/预告/股东户数/分红/基金持仓）按报告期记录，
+      没有新报告期时自动"没有待办"直接跳过 —— 这部分天然符合"没有则不做操作"；
     - **不判交易日**：东财披露不受交易日限制，周一固定跑；
-    - 已加入 `_NO_CATCH_UP_JOBS`：9 小时级任务不适合启动补跑，
-      错过就等下周一（季频数据滞后 7 天可接受）；
-    - 与 23:00 paper_daily 有 ~1h 重叠：save_fundamental 原子替换，
-      因子重算最多读到"一半新一半旧"的基本面 —— 增量回补固有性质。
+    - 已加入 `_NO_CATCH_UP_JOBS`：9 小时级任务不适合启动补跑，错过等下周一；
+    - 06:00 起跑 + 12h 超时上限 = 18:00 前结束，不与 23:00 paper_daily 重叠
+      （不再有新旧基本面混合读窗口）。
     """
     import subprocess  # noqa: PLC0415 - 仅本任务用
     import sys  # noqa: PLC0415
@@ -424,7 +424,7 @@ def fundamental_weekly_job(run_date: str, *, trigger_type: str = "manual") -> di
                 sys.executable,
                 "-m",
                 "tools.backfill_fundamental",
-                f"--stale-days={_FUNDAMENTAL_STALE_DAYS}",
+                "--force",
             ],
             cwd=str(backend_root),
             capture_output=True,
@@ -441,7 +441,7 @@ def fundamental_weekly_job(run_date: str, *, trigger_type: str = "manual") -> di
         return {
             "implemented": True,
             "ok": ok,
-            "stale_days": _FUNDAMENTAL_STALE_DAYS,
+            "mode": "force_full",
             "returncode": proc.returncode,
             "cost_seconds": round(time.perf_counter() - t0, 1),
             "tail": tail,
@@ -455,6 +455,5 @@ def fundamental_weekly_job(run_date: str, *, trigger_type: str = "manual") -> di
             "implemented": True,
             "ok": False,
             "timeout": True,
-            "stale_days": _FUNDAMENTAL_STALE_DAYS,
             "cost_seconds": round(time.perf_counter() - t0, 1),
         }
