@@ -1,0 +1,33 @@
+# ============================================================
+# Docker 构建上下文排除清单
+# build context 是项目根（deploy/docker-compose.yml: context: ..），
+# 没有这份文件的话，data/（3.8GB+）、.venv、node_modules 会整包
+# 发给 docker daemon —— 构建慢 + 爆磁盘。
+# ============================================================
+
+# ---- 数据与产物（运行时挂载卷，绝不进镜像） ----
+data/
+backend/logs/
+_archive/
+
+# ---- Python ----
+backend/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+
+# ---- 前端 ----
+frontend/node_modules/
+frontend/dist/
+
+# ---- 环境与密钥（compose 的 env_file 从宿主机读，不经镜像） ----
+.env
+.env.*
+
+# ---- 版本库与文档 ----
+.git/
+.github/
+docs/
+workbuddy*
+*.log

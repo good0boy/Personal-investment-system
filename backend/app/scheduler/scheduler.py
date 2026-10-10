@@ -64,6 +64,7 @@ def _make_runner(job_id: str):
 _JOB_CONFIG_KEYS = {
     "paper_daily": "paper_daily",
     "paper_intraday_check": "paper_intraday_check",
+    "fundamental_weekly": "fundamental_weekly",
     "alert_daily_summary": "alert_daily_summary",
     "catalog_check": "catalog_check",
 }
@@ -109,6 +110,9 @@ def start_scheduler() -> dict[str, Any]:
         }
         if job_id in _WEEKDAY_ONLY_JOBS:
             cron_kwargs["day_of_week"] = "mon-fri"   # 粗筛（精确判断在任务内）
+        elif spec.cron.day_of_week:
+            # 周频任务的 day_of_week 来自配置（如 "mon"）—— 不透传就会注册成每天跑
+            cron_kwargs["day_of_week"] = spec.cron.day_of_week
 
         sched.add_job(
             _make_runner(job_id),
@@ -117,7 +121,13 @@ def start_scheduler() -> dict[str, Any]:
             name=meta["name"],
             replace_existing=True,
         )
-        weekday_txt = "每周一至周五 " if job_id in _WEEKDAY_ONLY_JOBS else "每日 "
+        weekday_txt = (
+            "每周一至周五 "
+            if job_id in _WEEKDAY_ONLY_JOBS
+            else f"每周{spec.cron.day_of_week} "
+            if spec.cron.day_of_week
+            else "每日 "
+        )
         registered.append(
             {
                 "job_id": job_id,
@@ -214,7 +224,7 @@ def trigger_job_now(job_id: str, run_date: str | None = None) -> dict[str, Any]:
 #:    补跑 30 天会连发 30 次（好在幂等键 `{date}|daily_summary` 会撞掉 29 次，
 #:    但那 29 次是**白跑引擎外的读盘 + 渲染**，且日志里一片 skipped 噪音）。
 #:    更糟的是语义错误：补跑历史日期时播报的是**当前**持仓，与日期对不上。
-_NO_CATCH_UP_JOBS = {"alert_daily_summary", "paper_intraday_check"}
+_NO_CATCH_UP_JOBS = {"alert_daily_summary", "paper_intraday_check", "fundamental_weekly"}
 
 
 def run_startup_catch_up() -> dict[str, Any]:

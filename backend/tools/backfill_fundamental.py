@@ -566,6 +566,15 @@ def main() -> int:
     parser.add_argument("--stocks-only", action="store_true", help="只跑逐只数据集（跳过批量）")
     parser.add_argument("--retry-failed", action="store_true", help="只重试失败的")
     parser.add_argument("--force", action="store_true", help="忽略进度全量重拉（慎用）")
+    parser.add_argument(
+        "--stale-days",
+        type=int,
+        default=None,
+        metavar="N",
+        help="增量语义：除待办外，同时重拉「上次更新距今超过 N 天」的逐只数据集。"
+        "用于周频轮转（如 N=30 → 稳态每周重拉 ~1/4 市场，季报披露后最多滞后 4 周被刷到）。"
+        "批量数据集不受影响 —— 它本来就按报告期记录，新季度自动补。",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -610,7 +619,8 @@ def main() -> int:
     for dataset in STOCK_DATASETS:
         todo: list[str] = []
         for s in all_symbols:
-            st = ((state["stocks"].get(s) or {}).get(dataset) or {}).get("status")
+            rec_ds = (state["stocks"].get(s) or {}).get(dataset) or {}
+            st = rec_ds.get("status")
             if args.force:
                 todo.append(s)
             elif args.retry_failed:
@@ -618,12 +628,22 @@ def main() -> int:
                     todo.append(s)
             elif st not in ("ok", "empty"):
                 todo.append(s)
+            elif args.stale_days is not None:
+                # --stale-days：状态"成功"但太久没刷新的也重拉（周频轮转的增量语义）
+                updated = rec_ds.get("updated_at") or ""
+                age_days = (
+                    (datetime.now() - datetime.fromisoformat(updated)).days
+                    if updated
+                    else 10**6  # 无时间戳 = 更要刷
+                )
+                if age_days > args.stale_days:
+                    todo.append(s)
         passes[dataset] = todo
         logger.info(f"[{dataset}] 待办 {len(todo)} 只")
 
     total_todo = sum(len(v) for v in passes.values())
     if total_todo == 0:
-        logger.info("没有待办标的 —— 基本面回补已全部完成（要重拉加 --force）")
+        logger.info("没有待办标的 —— 基本面回补已全部完成（要重拉加 --force / --stale-days）")
         _print_status(state)
         return 0
 

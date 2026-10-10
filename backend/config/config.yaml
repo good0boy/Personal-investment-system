@@ -205,6 +205,16 @@ scheduler:
     catalog_check:
       cron: { hour: 9, minute: 0 }
       enabled: true
+    # 基本面/财务周频回补：每周一 21:00（主人 2026-10-10 拍板）。
+    # 行情每天补（paper_daily 内），低频数据每周一补。
+    # ⚠️ 与 23:00 paper_daily 有约 1h 重叠：save_fundamental 原子替换、
+    #    因子重算最多读到"一半新一半旧"的基本面 —— 增量回补的固有性质，可接受。
+    # --stale-days 30：稳态每周重拉 ~1/4 市场的逐只数据集（三大报表/财务指标），
+    #   季报披露后最多滞后 4 周被刷到；批量数据集（业绩报表/预告/股东户数/
+    #   分红送配/基金持仓）按报告期自动补新季报，不受此限。首跑全量 ~9h。
+    fundamental_weekly:
+      cron: { day_of_week: mon, hour: 21, minute: 0 }
+      enabled: true
     # 模拟盘盘中检查：交易日 14:45（2026-10-09 新增）。
     # 用 fuyao 实时快照价近似当日收盘，对当前持仓做**清仓预警**（time_stop /
     # over_realized / quality_broken / limit_down），15 分钟后尾盘可操作。

@@ -384,3 +384,77 @@ def catch_up_missing_days(job_id: str, *, max_days: int | None = None) -> dict[s
         "failed": failed,
         "details": results,
     }
+
+
+# ======================================================================
+# 任务 5：基本面/财务周频回补（每周一 21:00，主人 2026-10-10 拍板）
+# ======================================================================
+#: 逐只数据集的轮转窗口（天）：稳态下每周重拉 ~1/4 市场，季报滞后 ≤4 周
+_FUNDAMENTAL_STALE_DAYS = 30
+#: 子进程超时：首跑全量 ~9h 是在本地实测的；周频增量稳态 ~2-3h。
+#: 周一 21:00 + 4h 上限 = 凌晨 1:00 前结束，不会拖到早报（08:00）。
+_FUNDAMENTAL_TIMEOUT = 4 * 60 * 60
+
+
+@register_job("fundamental_weekly", "基本面/财务周频回补")
+def fundamental_weekly_job(run_date: str, *, trigger_type: str = "manual") -> dict[str, Any]:
+    """每周一 21:00 回补基本面/财务数据（`tools.backfill_fundamental`）。
+
+    设计：
+    - **子进程**运行 —— akshare 会话与主进程隔离，状态文件断点续传
+      （`data/meta/backfill_fundamental_state.json`），中断重跑即续上；
+    - `--stale-days 30` 增量轮转：稳态每周重拉 ~1/4 市场的逐只数据集
+      （三大报表/财务指标），批量数据集（业绩报表/预告/股东户数/分红/
+      基金持仓）按报告期自动补新季报；
+    - **不判交易日**：东财披露不受交易日限制，周一固定跑；
+    - 已加入 `_NO_CATCH_UP_JOBS`：9 小时级任务不适合启动补跑，
+      错过就等下周一（季频数据滞后 7 天可接受）；
+    - 与 23:00 paper_daily 有 ~1h 重叠：save_fundamental 原子替换，
+      因子重算最多读到"一半新一半旧"的基本面 —— 增量回补固有性质。
+    """
+    import subprocess  # noqa: PLC0415 - 仅本任务用
+    import sys  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    backend_root = Path(__file__).resolve().parents[2]
+    t0 = time.perf_counter()
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "tools.backfill_fundamental",
+                f"--stale-days={_FUNDAMENTAL_STALE_DAYS}",
+            ],
+            cwd=str(backend_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_FUNDAMENTAL_TIMEOUT,
+            check=False,
+        )
+        ok = proc.returncode == 0
+        tail = (proc.stdout or "").strip().splitlines()[-5:]
+        if not ok:
+            logger.error(f"[fundamental_weekly] 回补失败 rc={proc.returncode}，尾部输出：{tail}")
+        return {
+            "implemented": True,
+            "ok": ok,
+            "stale_days": _FUNDAMENTAL_STALE_DAYS,
+            "returncode": proc.returncode,
+            "cost_seconds": round(time.perf_counter() - t0, 1),
+            "tail": tail,
+        }
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            f"[fundamental_weekly] 回补超时（>{_FUNDAMENTAL_TIMEOUT // 3600}h），"
+            "状态文件已续传 —— 下周一自动接着跑"
+        )
+        return {
+            "implemented": True,
+            "ok": False,
+            "timeout": True,
+            "stale_days": _FUNDAMENTAL_STALE_DAYS,
+            "cost_seconds": round(time.perf_counter() - t0, 1),
+        }

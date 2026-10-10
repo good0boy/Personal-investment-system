@@ -310,6 +310,8 @@ class DatasourceConfig(BaseModel):
 class CronSpec(BaseModel):
     hour: int = 15
     minute: int = 35
+    # 周频任务用（如 "mon"）；日频任务留空（周几粗筛走 _WEEKDAY_ONLY_JOBS）
+    day_of_week: str | None = None
 
 
 class JobSpec(BaseModel):
@@ -323,6 +325,13 @@ class JobsConfig(BaseModel):
         default_factory=lambda: JobSpec(cron=CronSpec(hour=8, minute=0))
     )
     catalog_check: JobSpec = Field(default_factory=lambda: JobSpec(cron=CronSpec(hour=9, minute=0)))
+    # 基本面/财务周频回补（主人 2026-10-10 拍板）：每周一 21:00
+    paper_intraday_check: JobSpec = Field(
+        default_factory=lambda: JobSpec(cron=CronSpec(hour=14, minute=45))
+    )
+    fundamental_weekly: JobSpec = Field(
+        default_factory=lambda: JobSpec(cron=CronSpec(day_of_week="mon", hour=21, minute=0))
+    )
 
 
 class SchedulerConfig(BaseModel):
