@@ -298,6 +298,9 @@ class FuyaoThrottleConfig(BaseModel):
 
 class DatasourceConfig(BaseModel):
     primary: str = "baostock"
+    #: baostock 每日 API 请求上限（2026-10-10 主人给定：超 5 万次/天触发 6 小时封禁）。
+    #: 客户端在每次 login/数据请求前计数，达到上限当天拒绝再发（次日自动恢复）。
+    baostock_daily_api_limit: int = 50_000
     secondary: str = "akshare"
     min_interval: float = 0.12
     max_retries: int = 3

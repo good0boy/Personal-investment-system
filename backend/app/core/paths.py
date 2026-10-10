@@ -99,6 +99,9 @@ META_DB: Path = META_DIR / "meta.db"
 TRADE_CALENDAR_PARQUET: Path = META_DIR / "trade_calendar.parquet"
 #: 全市场日线回补的断点续传状态（阶段 2 · tools/backfill_quotes.py）
 BACKFILL_STATE_FILE: Path = META_DIR / "backfill_state.json"
+
+#: baostock 每日 API 请求计数（风控保护：超 5 万次/天会触发 6 小时封禁）
+BAOSTOCK_QUOTA_FILE: Path = META_DIR / "baostock_quota.json"
 #: 基本面数据回补的断点续传状态（tools/backfill_fundamental.py）
 BACKFILL_FUND_STATE_FILE: Path = META_DIR / "backfill_fundamental_state.json"
 #: 同花顺特色数据回补的断点续传状态（tools/backfill_special.py）

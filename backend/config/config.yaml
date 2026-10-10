@@ -148,6 +148,12 @@ data_sync:
 datasource:
   # 行情主源（模块 3/4 只用它）
   primary: "baostock"
+  # ★ baostock 每日 API 请求上限（2026-10-10 主人给定）：超 5 万次/天
+  #   会触发 6 小时封禁（10001011 黑名单）。客户端逐请求计数
+  #   （计数器 data/meta/baostock_quota.json，按天自动重置），
+  #   达到上限当天拒绝再发任何 baostock 请求（job failed + 企微告警），次日自动恢复。
+  #   参考：每日增量回补当天行情约 4800 次（4792 只 × 1 + 指数 + login），余量 ~10 倍。
+  baostock_daily_api_limit: 50000
   # 广度源（模块 1、实时行情、基本面）
   secondary: "akshare"
   # 请求节流（秒），避免被限频

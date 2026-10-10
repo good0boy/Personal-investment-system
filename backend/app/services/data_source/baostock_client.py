@@ -18,15 +18,19 @@
 """
 from __future__ import annotations
 
+import json
+import os
 import threading
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from typing import Any, TypeVar
 
 import pandas as pd
 
+from app.core.config import settings
 from app.core.errors import DataSourceError, SymbolFormatError
 from app.core.logging import logger
+from app.core.paths import BAOSTOCK_QUOTA_FILE
 from app.services.data_source.base import (
     INDEX_COLUMNS,
     QUOTE_COLUMNS,
@@ -59,6 +63,39 @@ _CALENDAR_CACHE_TTL = 3600.0     # 交易日历一年才变一次
 _NAME_LIST_CACHE_TTL = 300.0     # 证券名单/成分股/行业：会变，缓存短些
 
 _LOCK = threading.RLock()
+_QUOTA_LOCK = threading.RLock()
+
+
+def _quota_check_and_count() -> None:
+    """baostock 每日 API 请求计数 +1；达到当日上限抛 DataSourceError。
+
+    背景（2026-10-10 主人给定）：baostock 每日 API 请求超过 5 万次会触发
+    **6 小时封禁**（10001011 黑名单用户）。计数器落
+    `data/meta/baostock_quota.json`（按天自动重置，跨进程持久），
+    达到上限当天拒绝再发任何请求 —— job 记 failed + 企微告警，次日自动恢复。
+    计数点 = login 与每一次真实数据请求（缓存命中不计数）。
+    """
+    limit = settings.datasource.baostock_daily_api_limit
+    today = datetime.now().strftime("%Y-%m-%d")
+    count = 0
+    with _QUOTA_LOCK:
+        try:
+            if BAOSTOCK_QUOTA_FILE.exists():
+                raw = json.loads(BAOSTOCK_QUOTA_FILE.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and raw.get("date") == today:
+                    count = int(raw.get("count") or 0)
+        except Exception as exc:  # 计数文件损坏：告警并从 0 继续（罕见态）
+            logger.warning(f"[baostock] 配额计数文件损坏（从 0 重计）：{exc!r}")
+        if count >= limit:
+            raise DataSourceError(
+                f"今日 baostock API 请求已达上限：{count} / {limit}。"
+                f"为避免触发 6 小时封禁（10001011 黑名单），今天不再发起任何 baostock 请求；"
+                f"明日 0 点计数自动重置。基本面回补走 akshare 不受影响。"
+            )
+        count += 1
+        tmp = BAOSTOCK_QUOTA_FILE.with_suffix(f".tmp{os.getpid()}")
+        tmp.write_text(json.dumps({"date": today, "count": count}), encoding="utf-8")
+        os.replace(tmp, BAOSTOCK_QUOTA_FILE)
 
 
 class BaostockClient(BaseDataSource):
@@ -111,6 +148,7 @@ class BaostockClient(BaseDataSource):
                 return
             import baostock as bs  # noqa: PLC0415
 
+            _quota_check_and_count()   # 登录也是一次服务端请求
             res = bs.login()
             if res.error_code != "0":
                 raise DataSourceError(
@@ -198,9 +236,13 @@ class BaostockClient(BaseDataSource):
         Args:
             force_refresh: 跳过缓存读取。语义上是"刷新/探测"的方法必须传 True。
         """
+        def _metered() -> T:
+            _quota_check_and_count()   # 每次真实数据请求计数（缓存命中不走这里）
+            return self._with_session(call)
+
         return self._invoke(
             func_name,
-            lambda: self._with_session(call),
+            _metered,
             params=params,
             cache_key=cache_key,
             cache_ttl=cache_ttl,
