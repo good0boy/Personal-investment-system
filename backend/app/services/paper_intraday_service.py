@@ -110,8 +110,15 @@ def _fuyao_prices(symbols: list[str]) -> tuple[dict[str, float], dict[str, float
 def _local_close(symbol: str, n_back: int) -> float | None:
     """本地日线：倒数第 n_back 个交易日的收盘价（1 = 最近本地交易日）。"""
     try:
-        q = data_store.read_quotes(symbol, "2020-01-01", "2099-12-31", columns=["date", "close"])
-    except Exception:
+        # ★ end_date 传 None（2026-10-11 修复）：显式给 "2099-12-31" 会超出
+        #   `data_store` 的数据时间锁上界 → 抛 ReadUntilViolation → 被下面的
+        #   `except` 吞成 None。于是 `_local_close` **恒返回 None**，
+        #   「近 20 日累计兑现 >= 30%」这条主退出条件在 14:45 预警里永久失效，
+        #   且与"文件缺失"完全不可区分、零日志。None 会自动收敛到
+        #   min(时间锁, 今天)。
+        q = data_store.read_quotes(symbol, "2020-01-01", None, columns=["date", "close"])
+    except Exception as exc:
+        logger.warning(f"[intraday] {symbol} 读本地收盘价失败：{exc!r}")
         return None
     if q.empty:
         return None

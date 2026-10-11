@@ -289,19 +289,27 @@ def main() -> int:
     else:
         raw = sorted(state["symbols"].keys())
         keep = set(INDEX_SYMBOLS)
-        symbols = [s for s in raw if s in keep or is_target_board_symbol(s)]
+        # ★ 指数必须**排除**出个股链（2026-10-11 修复）：留着会让 `sh.000001`
+        #   走 `_do_one(is_index=False)` 落进 `quote_daily/`（个股 schema），
+        #   因子层 `quote_glob()` 不带过滤 → 指数涨跌幅被算进"全市场"因子，
+        #   实测污染 16 个因子产物共 26208 行。指数由下面的 index_todo 单独走
+        #   `is_index=True` 落 `quote_index/`。
+        symbols = [s for s in raw if s not in keep and is_target_board_symbol(s)]
         if len(symbols) != len(raw):
             # ★ 清单自愈：板块判定规则更新后，旧清单里可能残留不符规则的代码。
             #   实测 2026-09-18：修掉"只看 6 位码"的 bug 后，旧清单里有 223 个
             #   `sh.000xxx` 上证指数需要剔除。不自动清理的话，它们会被当成
             #   深主板股票拉取并落进 quote_daily/，污染回测候选池。
-            dropped = sorted(set(raw) - set(symbols))
-            logger.warning(
-                f"清单里有 {len(dropped)} 个代码不符合当前板块规则，已剔除"
-                f"（例如 {dropped[:3]}）—— 通常是板块判定规则更新过"
-            )
+            #   注意：指数（INDEX_SYMBOLS）**只从个股链剔除、不从状态里删** ——
+            #   它由 index_todo 单独维护，删记录会让它每晚重复重拉。
+            dropped = [s for s in sorted(set(raw) - set(symbols)) if s not in keep]
             for s in dropped:
                 state["symbols"].pop(s, None)
+            if dropped:
+                logger.warning(
+                    f"清单里有 {len(dropped)} 个代码不符合当前板块规则，已剔除"
+                    f"（例如 {dropped[:3]}）—— 通常是板块判定规则更新过"
+                )
             state["universe_size"] = len(symbols)
             save_state(state)
         logger.info(f"沿用已有清单（{len(symbols)} 只）；要重扫加 --discover")

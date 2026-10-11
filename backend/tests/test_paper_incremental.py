@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import sys
+from itertools import pairwise
 from pathlib import Path
 
 import pandas as pd
@@ -54,7 +55,12 @@ def synth_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def _mk_engine(mode: str, run_date: str, state: dict | None):
     """按生产口径构造引擎：每个"交易日"新建策略实例（与 paper_service 一致）。"""
-    strategy = get_strategy("quality_reversal", _params(reversal_pct=0.75))
+    # ★ rebalance_every 必须用**生产值 5**：原测试用 1，而任何数都能整除 1，
+    #   于是"建仓节奏"这条分支在对拍里恒成立、从未被真正验证过 ——
+    #   增量模式 `di % 1 == 0` 恒真（每天都建仓）这个 bug 就这样躲过了对拍门。
+    strategy = get_strategy(
+        "quality_reversal", _params(reversal_pct=0.75, rebalance_every=5)
+    )
     common = {
         "initial_cash": 1_000_000.0,
         "max_positions": 5,
@@ -70,7 +76,11 @@ def _mk_engine(mode: str, run_date: str, state: dict | None):
         raise ValueError("仅冷启动日使用 full")
     return PaperEngine(
         strategy, run_date=run_date, state=state,
-        listed_days_min=90, no_rebuy_days=60, delist_confirm_days=3, **common,
+        listed_days_min=90, no_rebuy_days=60, delist_confirm_days=3,
+        # 建仓节奏锚点与全量一致（生产传 PAPER_START_DATE，这里传 BT_START）
+        rebalance_anchor=BT_START,
+        trading_days=list(DATE_STRS),
+        **common,
     )
 
 
@@ -79,8 +89,11 @@ def test_incremental_matches_full_bitwise(synth_env) -> None:
 
     equity/trades/positions/orders 逐位（check_exact=True）；
     state 用"再跑一天应等价"的间接校验（见 test_state_roundtrip_continues）。
+
+    ★ `rebalance_every=5`（生产值）：用 1 的话"建仓节奏"分支恒成立、等于没测，
+      增量每天建仓的 bug 会直接漏过（2026-10-11 阻塞级事故的根因）。
     """
-    params = _params(reversal_pct=0.75)
+    params = _params(reversal_pct=0.75, rebalance_every=5)
 
     # ---- A. 全量 ----
     full = BacktestEngine(
@@ -89,6 +102,8 @@ def test_incremental_matches_full_bitwise(synth_env) -> None:
         initial_cash=1_000_000.0, max_positions=5, max_weight_per_stock=0.20,
         benchmark="sh.000001", listed_days_min=90, no_rebuy_days=60,
         delist_confirm_days=3,
+        # 显式注入合成交易日历（不依赖全局 calendar 单例，避免别的用例换日历）
+        trading_days=list(DATE_STRS),
     )
     ref = full.run()
 
@@ -99,6 +114,8 @@ def test_incremental_matches_full_bitwise(synth_env) -> None:
         initial_cash=1_000_000.0, max_positions=5, max_weight_per_stock=0.20,
         benchmark="sh.000001", listed_days_min=90, no_rebuy_days=60,
         delist_confirm_days=3,
+        # 显式注入合成交易日历（不依赖全局 calendar 单例，避免别的用例换日历）
+        trading_days=list(DATE_STRS),
     )
     cold_result = cold.run()
     state = cold.export_state()
@@ -140,6 +157,11 @@ def test_incremental_matches_full_bitwise(synth_env) -> None:
         "orders": ensure_contract(ref.orders, ORDER_COLUMNS),
     }
 
+    # orders.shares 的 dtype 是"值的函数"而非撮合差异：全是成交行时是 int64，
+    # 混入未成交行（None→NaN）后是 float64。比较前统一成 float64。
+    for d in (inc["orders"], ref_dfs["orders"]):
+        d["shares"] = pd.to_numeric(d["shares"], errors="coerce").astype("float64")
+
     # equity 的 nav/drawdown/benchmark_nav 是 metrics 层补的列（引擎侧全 NA），
     # object-NA 与 float-NaN 的表示差异不属于撮合结果 —— 单独按"是否全 NA"校验。
     NA_ONLY = {"equity": ("nav", "drawdown", "benchmark_nav")}
@@ -158,6 +180,24 @@ def test_incremental_matches_full_bitwise(synth_env) -> None:
         except AssertionError as exc:
             pytest.fail(f"★ 对拍失败（{name}）：增量与全量存在逐位差异\n{exc}")
 
+    # ---- 建仓节奏的"非退化"断言（逐位一致之上再钉一层语义）----
+    # 逐位一致若发生在"两边都不建仓"或"两边每天都建仓"上，依然算通过，
+    # 所以必须显式验证建仓日确实是"每 5 个交易日一次"、且两边落在同一天。
+    def _entry_days(df: pd.DataFrame) -> list[str]:
+        if "side" not in df.columns or df.empty:
+            return []
+        return sorted({str(d)[:10] for d in df.loc[df["side"] == "buy", "signal_date"]})
+
+    ref_days, inc_days = _entry_days(ref_dfs["orders"]), _entry_days(inc["orders"])
+    assert ref_days == inc_days, (
+        f"建仓日不一致：全量 {ref_days} vs 增量 {inc_days}"
+    )
+    # 相邻建仓日的间隔必须 >= rebalance_every（每日建仓 = 间隔 1 = 回归）
+    dates_sorted = sorted(set(full.days))
+    pos = {d: i for i, d in enumerate(dates_sorted)}
+    gaps = [pos[b] - pos[a] for a, b in pairwise(ref_days) if b in pos]
+    assert all(g >= 5 for g in gaps), f"建仓间隔应 >= 5 个交易日，实际 {gaps}"
+
 
 def test_state_roundtrip_continues(synth_env) -> None:
     """★ 状态 round-trip：两段增量之间（跨夜落盘/重读）结果必须连续一致。
@@ -175,6 +215,8 @@ def test_state_roundtrip_continues(synth_env) -> None:
         initial_cash=1_000_000.0, max_positions=5, max_weight_per_stock=0.20,
         benchmark="sh.000001", listed_days_min=90, no_rebuy_days=60,
         delist_confirm_days=3,
+        # 显式注入合成交易日历（不依赖全局 calendar 单例，避免别的用例换日历）
+        trading_days=list(DATE_STRS),
     )
     cold.run()
     state = cold.export_state()

@@ -28,7 +28,7 @@ from typing import Any, TypeVar
 import pandas as pd
 
 from app.core.config import settings
-from app.core.errors import DataSourceError, SymbolFormatError
+from app.core.errors import DataSourceError, DataSourceRateLimited, SymbolFormatError
 from app.core.logging import logger
 from app.core.paths import BAOSTOCK_QUOTA_FILE
 from app.services.data_source.base import (
@@ -87,7 +87,12 @@ def _quota_check_and_count() -> None:
         except Exception as exc:  # 计数文件损坏：告警并从 0 继续（罕见态）
             logger.warning(f"[baostock] 配额计数文件损坏（从 0 重计）：{exc!r}")
         if count >= limit:
-            raise DataSourceError(
+            # ★ 必须抛 DataSourceRateLimited 而不是 DataSourceError（2026-10-11 修复）：
+            #   DataSourceError 落在 `is_retryable` 的可重试侧 → 每只股票都要
+            #   白白重试 3 次（退避 0.5s+1.0s），4570 只 ≈ 1.9 小时纯 sleep，
+            #   且每只都记 failed，根因（配额耗尽）与表象（网络故障）完全对不上。
+            #   RateLimited 属"非重试"类：立即上抛 + 触发熔断，后续调用快速失败。
+            raise DataSourceRateLimited(
                 f"今日 baostock API 请求已达上限：{count} / {limit}。"
                 f"为避免触发 6 小时封禁（10001011 黑名单），今天不再发起任何 baostock 请求；"
                 f"明日 0 点计数自动重置。基本面回补走 akshare 不受影响。"

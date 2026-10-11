@@ -518,6 +518,8 @@ class BacktestEngine:
         no_rebuy_days: int | None = None,
         delist_confirm_days: int = 3,
         market: MarketData | None = None,
+        rebalance_anchor: str | None = None,
+        trading_days: list[str] | None = None,
     ) -> None:
         self.strategy = strategy
         self.start, self.end, self.preheat_start = start, end, preheat_start
@@ -552,6 +554,17 @@ class BacktestEngine:
             raise AppError(f"回测区间 {start} ~ {end} 内没有任何交易日")
         self.first_di = self.market.date_index[self.days[0]]
         self.last_di = self.market.date_index[self.days[-1]]
+
+        # 建仓节奏的锚点（`ctx.day_ordinal` 的零点）。默认取矩阵起点 ——
+        # 于是全量模式的 ordinal **恒等于**旧的矩阵行索引 `di`，口径零变化；
+        # 增量撮合（PaperEngine）必须显式传入模拟盘起点才能与全量同轴。
+        self._ordinal_anchor = str(rebalance_anchor or self.days[0])
+        self._ordinal_map: dict[str, int] | None = None
+        self._ordinal_warned = False
+        #: 建仓节奏用的交易日序列。**显式注入**（生产传真实交易日历，
+        #: 测试传合成日历）—— 若依赖 `calendar` 全局单例，别的用例把日历
+        #: 换成子集后，建仓序号会静默回退到矩阵行索引，导致全量/增量口径分裂。
+        self._trading_days = list(trading_days) if trading_days is not None else None
 
         # 上市首日（新股 90 交易日门槛用）
         self.first_trade_date = self._derive_first_trade_dates()
@@ -637,6 +650,35 @@ class BacktestEngine:
                 f"行情矩阵在 {preheat_start} ~ {end} 内有 {len(missing)} 个交易日无任何标的行情"
                 f"（如 {', '.join(missing[:5])}）—— 通常是因为标的范围太窄或数据未回补完。"
             )
+
+    def _day_ordinal(self, day: str) -> int:
+        """`day` 距锚点的交易日跨度 —— 注入 `ctx.day_ordinal` 供策略做节奏判断。
+
+        ★ 为什么不直接给矩阵行索引：增量撮合的窗口每天滚动，run_date 恒在
+          窗口末行，节奏判断会退化成"恒成立"。详见 `StrategyContext.day_ordinal`。
+        锚点之后的交易日序列只建一次（全市场约 8000 个交易日），之后 O(1) 查。
+        """
+        if self._ordinal_map is None:
+            anchor = self._ordinal_anchor
+            days = self._trading_days
+            if days is None:
+                from app.services.calendar_service import calendar  # noqa: PLC0415
+
+                days = list(calendar.all_trading_days)
+            self._ordinal_map = {d: i for i, d in enumerate(days) if d >= anchor}
+        ordinal = self._ordinal_map.get(day)
+        if ordinal is not None:
+            return ordinal
+        # 日历未覆盖该日：合成日历（测试）或日历文件缺失/未加载。
+        # ★ **绝不能返回 0** —— 0 恰好是建仓日，会把"取不到序号"变成"每天都建仓"。
+        if not self._ordinal_warned:
+            logger.warning(
+                f"交易日历未覆盖 {day}（锚点 {self._ordinal_anchor}）—— "
+                f"建仓节奏退回矩阵行索引，增量与全量口径将不一致，请检查交易日历文件"
+            )
+            self._ordinal_warned = True
+        di = self.market.date_index.get(day)
+        return (di - self.first_di) if di is not None else 0
 
     def _derive_first_trade_dates(self) -> dict[str, str]:
         """每只标的在矩阵里的首个**有数据**日期（用于新股 90 交易日门槛）。
@@ -962,7 +1004,9 @@ class BacktestEngine:
             entry_idx=di,
             entry_reason=order.reason,
         )
-        self._record_order(order, day, price, price * shares, "filled", order.reason)
+        self._record_order(
+            order, day, price, price * shares, "filled", order.reason, shares=shares
+        )
 
     def _record_order(
         self,
@@ -972,6 +1016,7 @@ class BacktestEngine:
         amount: float | None,
         status: str,
         note: str,
+        shares: int | None = None,
     ) -> None:
         self._order_rows.append(
             {
@@ -979,7 +1024,10 @@ class BacktestEngine:
                 "exec_date": exec_date,
                 "symbol": order.symbol,
                 "side": order.side,
-                "shares": order.shares,
+                # ★ 买单的实际成交股数：Order 只带 target_amount、从不设 shares，
+                #   实测 142/142 笔 filled 买单的 shares 为空 → 企微开仓消息渲染成
+                #   "433.37 元 × 0 股"。成交时由调用方回填（2026-10-11 修复）。
+                "shares": order.shares if shares is None else shares,
                 "price": price,
                 "amount": amount,
                 "status": status,
@@ -1057,6 +1105,7 @@ class BacktestEngine:
                 market=self.market,
                 calendar=None,
                 universe=self.universe(di),
+                day_ordinal=self._day_ordinal(day),
             )
             if di == self.first_di:
                 self.strategy.setup(ctx)
@@ -1085,6 +1134,7 @@ class BacktestEngine:
                 market=self.market,
                 calendar=None,
                 universe=self.universe(self.last_di),
+                day_ordinal=self._day_ordinal(self.days[-1]),
             )
         )
 

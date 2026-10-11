@@ -63,6 +63,8 @@ class PaperEngine(BacktestEngine):
         delist_confirm_days: int = 3,
         preheat_days: int = DEFAULT_PREHEAT_DAYS,
         preheat_start: str | None = None,
+        rebalance_anchor: str | None = None,
+        trading_days: list[str] | None = None,
     ) -> None:
         self._state = dict(state)
         self._run_date = run_date
@@ -85,6 +87,8 @@ class PaperEngine(BacktestEngine):
             listed_days_min=listed_days_min,
             no_rebuy_days=no_rebuy_days,
             delist_confirm_days=delist_confirm_days,
+            rebalance_anchor=rebalance_anchor,
+            trading_days=trading_days,
         )
         self._inject_state()
 

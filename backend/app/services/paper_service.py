@@ -341,6 +341,7 @@ def _run_full_day(
             listed_days_min=settings.universe.listed_days_min,
             no_rebuy_days=settings.universe.no_rebuy_days,
             delist_confirm_days=settings.universe.delist_confirm_days,
+            trading_days=list(calendar.all_trading_days),
         )
         result = engine.run()
     cost_seconds = round(time.perf_counter() - t0, 2)
@@ -392,7 +393,13 @@ def _run_full_day(
         trigger=trigger,
         notify=notify,
         summary=summary,
-        entry_candidates=getattr(engine, "last_entry_candidates", None),
+        # ★ 从 **strategy** 取，不是从 engine（2026-10-11 修复）：
+        #   `last_entry_candidates` 是 QualityReversalStrategy 的属性，engine 上
+        #   从来没有 → getattr 恒 None → `notify_entry_plan` 永不入场，
+        #   "建仓计划"企微推送从上线至今一次都没发过。
+        entry_candidates=getattr(
+            getattr(engine, "strategy", None), "last_entry_candidates", None
+        ),
         max_positions=int(strategy.params.get("max_positions", 10)),
     )
 
@@ -463,6 +470,9 @@ def _run_incremental_day(
                 listed_days_min=settings.universe.listed_days_min,
                 no_rebuy_days=settings.universe.no_rebuy_days,
                 delist_confirm_days=settings.universe.delist_confirm_days,
+                # 建仓节奏与全量同轴（窗口滚动的增量模式下不能靠矩阵行索引）
+                rebalance_anchor=PAPER_START_DATE,
+                trading_days=list(calendar.all_trading_days),
             )
             result = engine.run_one_day()
             if result.equity.empty:
@@ -589,7 +599,13 @@ def _run_incremental_day(
             "cost_seconds": cost_seconds,
             "trigger": trigger,
         },
-        entry_candidates=getattr(engine, "last_entry_candidates", None),
+        # ★ 从 **strategy** 取，不是从 engine（2026-10-11 修复）：
+        #   `last_entry_candidates` 是 QualityReversalStrategy 的属性，engine 上
+        #   从来没有 → getattr 恒 None → `notify_entry_plan` 永不入场，
+        #   "建仓计划"企微推送从上线至今一次都没发过。
+        entry_candidates=getattr(
+            getattr(engine, "strategy", None), "last_entry_candidates", None
+        ),
         max_positions=int(strategy.params.get("max_positions", 10)),
     )
 

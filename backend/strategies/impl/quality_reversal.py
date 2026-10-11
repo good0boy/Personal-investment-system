@@ -371,7 +371,10 @@ class QualityReversalStrategy(BaseStrategy):
     # ==================================================================
     def _buy_side(self, ctx: StrategyContext, di: int) -> None:
         every = int(self.params["rebalance_every"])
-        if every > 0 and di % every != 0:
+        # ★ 用 `ctx.day_ordinal`（引擎注入的绝对交易日序号），**不用矩阵行索引 di**：
+        #   增量撮合窗口每天滚动，di 恒等于窗口末行行号，`di % every` 会恒成立，
+        #   导致增量模式每天建仓、与全量每 N 日建仓的口径不一致（2026-10-11 修复）。
+        if every > 0 and ctx.day_ordinal % every != 0:
             return                                   # 未到建仓日
         self._rebalance_days += 1
 

@@ -44,7 +44,7 @@ import json
 import sys
 import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -330,16 +330,39 @@ def discover_symbols() -> list[str]:
     return targets
 
 
+#: 批量数据集的**法定披露截止日**（月-日）；0331/1231 落在次年。
+#: ★ 2026-10-11 修复：原 `report_periods` 用「报告期结束 ≤ 今天」判定，
+#:   会把**刚结束、披露远未完成**的报告期纳入（如 9/30 报告期，法定披露
+#:   截止 10/31，此刻全市场只有百来家公司披露）。接口只返回已披露的那一小部分，
+#:   被记为 ok；而批量通道 `--force` 无效 + "ok 即跳过"没有自愈路径 ——
+#:   残缺截面被**永久锁死**，且随时间变成"历史"、无任何告警。
+_DISCLOSURE_DUE: dict[str, tuple[int, int]] = {
+    "0331": (4, 30),   # 一季报：次年 4 月底
+    "0630": (8, 31),   # 半年报：同年 8 月底
+    "0930": (10, 31),  # 三季报：同年 10 月底
+    "1231": (4, 30),   # 年报：次年 4 月底
+}
+#: 截止后再等几天，避免"最后一天披露"的边界（预留缓冲，非精确要求）
+_DISCLOSURE_BUFFER_DAYS = 7
+
+
 def report_periods() -> list[str]:
-    """批量数据集要扫的报告期（YYYYMMDD，季度末），2018Q1 ~ 最近已完成季度。"""
+    """批量数据集要扫的报告期（YYYYMMDD，季度端点）。
+
+    只返回**披露已完毕**的报告期（含缓冲）—— 刚结束的季度要等法定截止日
+    过后才扫，否则拿到的是残缺截面（见 `_DISCLOSURE_DUE` 的事故注释）。
+    """
     today = date.today()
     out: list[str] = []
     for year in range(REPORT_PERIOD_START_YEAR, today.year + 1):
-        for md in ("0331", "0630", "0930", "1231"):
-            p = f"{year}{md}"
-            if p <= today.strftime("%Y%m%d"):
-                out.append(p)
-    return out
+        for md, (due_month, due_day) in _DISCLOSURE_DUE.items():
+            due_year = year + 1 if md in ("0331", "1231") else year
+            due = date(due_year, due_month, due_day) + timedelta(
+                days=_DISCLOSURE_BUFFER_DAYS
+            )
+            if due <= today:
+                out.append(f"{year}{md}")
+    return sorted(out)
 
 
 # ======================================================================

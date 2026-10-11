@@ -181,7 +181,7 @@ def _artifact_max_date(path: Path) -> str | None:
     try:
         import duckdb  # noqa: PLC0415 - 函数内导入，避免 CLI 冷启动无谓依赖
 
-        sql = f"SELECT max(date) FROM read_parquet('{path.as_posix()}')"  # noqa: S608
+        sql = f"SELECT max(date) FROM read_parquet('{path.as_posix()}')"
         row = duckdb.execute(sql).fetchone()
         return str(row[0])[:10] if row and row[0] is not None else None
     except Exception:
