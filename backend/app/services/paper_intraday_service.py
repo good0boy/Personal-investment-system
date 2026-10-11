@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ from tools.universe import price_limit_pct
 
 #: 快照价/前收的候选列名（fuyao 返回结构未在客户端固化，做宽容解析）
 _PRICE_COLS = ("last_price", "latest_price", "price", "close", "last")
-_PRECLOSE_COLS = ("prev_close", "pre_close", "preclose", "yesterday_close", "last_close")
+_PRECLOSE_COLS = ("prev_close", "pre_close", "preclose", "prev_price", "yesterday_close", "last_close")
 
 #: limit_down 判定容差（跌停价 = round(前收×(1-limit), 2)，快照价可能差一分）
 _LIMIT_DOWN_TOL = 1.01
@@ -107,35 +108,76 @@ def _latest_is_st_map(symbols: list[str]) -> dict[str, int]:
     return out
 
 
-def _fuyao_prices(symbols: list[str]) -> tuple[dict[str, float], dict[str, float], str | None]:
-    """fuyao 快照 → ({symbol: 最新价}, {symbol: 前收}, 错误信息)。"""
+@dataclass
+class FuyaoSnap:
+    """单只标的的 fuyao 实时快照（**真实交易价口径，不复权**）。"""
+
+    price: float                     # 最新价
+    prev_close: float | None         # 昨收（真实口径）
+    day_chg: float | None            # 当日实时涨跌幅（**小数**，0.574 = +0.574%；
+                                     #  接口字段 price_change_ratio_pct 实测即小数）
+
+
+def _fuyao_snapshots(symbols: list[str]) -> tuple[dict[str, FuyaoSnap], str | None]:
+    """fuyao 快照 → ({symbol: FuyaoSnap}, 错误信息)。
+
+    ★ 为什么结构化而不是两个 dict（2026-10-11）：over_realized / 止损的判定
+      此前拿 **fuyao 真实价** 去除以 **本地 baostock hfq 价** —— 两者复权口径
+      不同（茅台 hfq≈9686 vs 真实≈1263，差 7.7 倍），混算后 r20 恒为 -87%，
+      over_realized **永久漏报**。修法：当日涨跌用 fuyao 自己的
+      price_change_ratio_pct（真实口径），与本地 hfq 段收益分段连乘合成。
+    """
     ths = {sym_mod.to_thscode(s): s for s in symbols}
     client = FuyaoClient()
     raw = client.snapshot(thscodes=",".join(ths.keys()))
     if raw is None or raw.empty:
-        return {}, {}, "fuyao snapshot 返回空"
+        return {}, "fuyao snapshot 返回空"
     pcol = _pick_col(raw, _PRICE_COLS)
     if pcol is None:
-        return {}, {}, f"fuyao snapshot 无法识别价格列（实际列：{list(raw.columns)}）"
+        return {}, f"fuyao snapshot 无法识别价格列（实际列：{list(raw.columns)}）"
     ccol = _pick_col(raw, _PRECLOSE_COLS)
+    chgcol = _pick_col(raw, ("price_change_ratio_pct", "price_change_ratio", "pct_chg"))
     code_col = next((c for c in raw.columns if c.lower() in ("thscode", "code", "symbol")), None)
     if code_col is None:
-        return {}, {}, f"fuyao snapshot 无法识别代码列（实际列：{list(raw.columns)}）"
+        return {}, f"fuyao snapshot 无法识别代码列（实际列：{list(raw.columns)}）"
 
-    prices: dict[str, float] = {}
-    precloses: dict[str, float] = {}
+    snaps: dict[str, FuyaoSnap] = {}
     for _, r in raw.iterrows():
         canon = ths.get(str(r[code_col]))
         if canon is None:
             continue
         try:
-            prices[canon] = float(r[pcol])
+            price = float(r[pcol])
         except (TypeError, ValueError):
             continue
+        prev_close = None
         if ccol is not None:
             with contextlib.suppress(TypeError, ValueError):
-                precloses[canon] = float(r[ccol])
-    return prices, precloses, None
+                v = float(r[ccol])
+                if v > 0:
+                    prev_close = v
+        day_chg = None
+        if chgcol is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                v = float(r[chgcol])
+                if pd.notna(v):
+                    day_chg = v / 100.0 if abs(v) > 1.5 else v
+                    # 接口字段名带 _pct，实测为小数（0.574=+0.574%）；这里按
+                    # ">1.5 视为百分数"防御性归一，避免上游口径变化翻 100 倍
+        snaps[canon] = FuyaoSnap(price=price, prev_close=prev_close, day_chg=day_chg)
+    return snaps, None
+
+
+def _fuyao_prices(symbols: list[str]) -> tuple[dict[str, float], dict[str, float], str | None]:
+    """兼容包装：旧签名（两个 dict）。新代码请用 `_fuyao_snapshots`。"""
+    snaps, err = _fuyao_snapshots(symbols)
+    if err:
+        return {}, {}, err
+    return (
+        {k: v.price for k, v in snaps.items()},
+        {k: v.prev_close for k, v in snaps.items() if v.prev_close is not None},
+        None,
+    )
 
 
 def _local_close(symbol: str, n_back: int) -> float | None:
@@ -213,14 +255,15 @@ def evaluate_holdings(
     tp_mult = float(params.get("take_profit_p_mult", 0.0) or 0.0)
 
     symbols = holdings["symbol"].astype(str).tolist()
-    prices, precloses, err = _fuyao_prices(symbols)
+    snaps, err = _fuyao_snapshots(symbols)
     if err:
         raise RuntimeError(f"fuyao 快照不可用：{err}")
 
     alerts: list[dict[str, Any]] = []
     for _, row in holdings.iterrows():
         sym = str(row["symbol"])
-        price = prices.get(sym)
+        snap = snaps.get(sym)
+        price = snap.price if snap else None
         if price is None or price <= 0:
             continue
         reasons: list[str] = []
@@ -230,16 +273,41 @@ def evaluate_holdings(
         if hd >= 0 and hd >= hold_max:
             reasons.append(f"time_stop（已持有 {hd} >= {hold_max} 个交易日）")
 
-        c20 = _local_close(sym, 21)          # T-20 收盘（本地最近 21 根的第 1 根）
-        if c20 and c20 > 0 and price / c20 - 1.0 >= r20_max:
-            reasons.append(f"over_realized（近20日累计 {price / c20 - 1.0:+.1%} >= {r20_max:.0%}）")
+        # ★ over_realized 用**分段收益合成**（2026-10-11 修复复权口径混算）：
+        #   hfq 段收益（T-20→昨收，hfq 对 hfq，跨除权天然正确）
+        #   × 当日实时涨跌（fuyao price_change_ratio_pct，真实对真实）
+        #   两者连乘 ≈ T-20→现在的真实累计收益。此前直接用 fuyao 真实价 /
+        #   本地 hfq T-20 收盘，口径混算后 r20 恒为 -87%（茅台实证），
+        #   over_realized 永久漏报。
+        c20 = _local_close(sym, 21)          # T-20 收盘（hfq）
+        c1 = _local_close(sym, 1)            # 昨收（hfq）
+        r20 = None
+        if c20 and c20 > 0 and c1 and c1 > 0:
+            r20 = c1 / c20 - 1.0             # hfq 段：T-20 → 昨收
+            day_chg = snap.day_chg if snap else None
+            if day_chg is not None:
+                r20 = (1.0 + r20) * (1.0 + day_chg) - 1.0   # 叠加今日盘中真实涨跌
+            else:
+                logger.warning(
+                    f"[intraday] {sym} fuyao 未返回当日涨跌幅，"
+                    f"r20 降级为截至昨收的 hfq 口径（{r20:+.1%}）"
+                )
+            if r20 >= r20_max:
+                reasons.append(
+                    f"over_realized（近20日累计 {r20:+.1%} >= {r20_max:.0%}）"
+                )
 
         p_neg = _factor_latest_lt_zero(sym, "profit_yoy")
         r_neg = _factor_latest_lt_zero(sym, "revenue_yoy")
         if p_neg or r_neg:
             reasons.append("quality_broken（基本面转负）")
 
-        pc = precloses.get(sym) or _local_preclose(sym)
+        pc = (snaps[sym].prev_close if sym in snaps else None) or None
+        if pc is None:
+            # ★ 不再回退到本地 hfq 前收（2026-10-11）：hfq 前收 vs fuyao 真实现价
+            #   口径混算会把阈值放大 7 倍 → 无脑误报"逼近跌停"。缺 prev_close
+            #   就跳过该条判定（宁可漏报单条，不出错误信号）。
+            logger.warning(f"[intraday] {sym} fuyao 未返回前收，跳过 limit_down 判定")
         if pc and pc > 0:
             # ★ 用统一的板块限幅（`tools.universe.price_limit_pct`），不再硬编码 0.9
             #   （2026-10-11 修复）：主板 ±10% 时碰巧正确，但创业板 ±20% 会**误报**
@@ -251,14 +319,20 @@ def evaluate_holdings(
                     f"limit_down（最新价 {price:.2f} 封跌停，前收 {pc:.2f}，限幅 {limit:.0%}）"
                 )
 
+        # ★ 止损/止盈同样分段合成（2026-10-11）：entry_price 是引擎的 **hfq 成交价**，
+        #   直接除 fuyao 真实现价又是口径混算。hfq 段（entry→昨收）× 今日实时涨跌。
         entry_price = float(row.get("entry_price") or 0)
-        if entry_price > 0 and sl_mult > 0:
-            gross = price / entry_price - 1.0
-            if gross <= -abs(sl_mult) * 0.0225:  # p 的样本中位 ~2.25%，预警用近似
+        if entry_price > 0 and (sl_mult > 0 or tp_mult > 0):
+            c1e = _local_close(sym, 1)       # 昨收（hfq，与 entry_price 同口径）
+            hfq_gain = (c1e / entry_price - 1.0) if (c1e and c1e > 0 and entry_price > 0) else None
+            day_chg = snap.day_chg if snap else None
+            gross = None
+            if hfq_gain is not None:
+                gross = (1.0 + hfq_gain) * (1.0 + day_chg) - 1.0 if day_chg is not None else hfq_gain
+            if gross is not None and sl_mult > 0 and gross <= -abs(sl_mult) * 0.0225:
+                # p 的样本中位 ~2.25%，预警用近似
                 reasons.append(f"stop_loss（毛收益 {gross:+.1%} 触及止损带）")
-        if entry_price > 0 and tp_mult > 0:
-            gross = price / entry_price - 1.0
-            if gross >= abs(tp_mult) * 0.0225:
+            if gross is not None and tp_mult > 0 and gross >= abs(tp_mult) * 0.0225:
                 reasons.append(f"take_profit（毛收益 {gross:+.1%} 触及止盈带）")
 
         if reasons:
