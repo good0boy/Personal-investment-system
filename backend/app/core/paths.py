@@ -9,20 +9,48 @@ from functools import lru_cache
 from pathlib import Path
 
 
-def _find_project_root() -> Path:
-    """从当前文件向上查找项目根（以 .gitignore + backend 目录为标记）。"""
+def _find_backend_dir() -> Path:
+    """定位 **backend 目录本身**（代码/config/logs 的根）。
+
+    ★ 为什么单独解析、不能全靠 PROJECT_ROOT（2026-10-11 部署阻塞修复）：
+      Docker 里 `COPY backend /app` → 代码在 `/app/app/core/paths.py`，
+      **没有 `/app/backend/` 子目录，也没有 .gitignore**（.dockerignore 排除了
+      `.git/`，根 `.gitignore` 也不在 `/app` 下）。旧实现只认
+      「含 backend/ + .gitignore 的父目录」，容器里必然 fallback 到 `parents[3]`
+      = `/` → `CONFIG_FILE = /backend/config/config.yaml`（不存在）→
+      `config.py` 直接 FileNotFoundError，**容器启动即崩**。
+      现在按「有 config/config.yaml 且有 app/ 子目录」认 backend 根，
+      两种布局都能命中；`BACKEND_ROOT` 环境变量是最后的逃生门。
+    """
+    env = os.getenv("BACKEND_ROOT", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
     here = Path(__file__).resolve()
     for parent in here.parents:
-        if (parent / "backend").is_dir() and (parent / ".gitignore").exists():
+        if (parent / "config" / "config.yaml").exists() and (parent / "app").is_dir():
             return parent
     # 兜底：core -> app -> backend -> root
     return here.parents[3]
 
 
+def _find_project_root() -> Path:
+    """项目根（本地 = 仓库根；容器 = backend 目录的上级）。
+
+    判据沿用「含 backend/ + .gitignore 的目录」；找不到时退化为 backend 的上级
+    —— 容器布局下 backend 目录本身就是挂载点（/app），其上级 / 只是占位，
+    真正用得到的是 `BACKEND_DIR`/`CONFIG_DIR`/`LOGS_DIR`（都在 backend 下解析）。
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "backend").is_dir() and (parent / ".gitignore").exists():
+            return parent
+    return _find_backend_dir().parent
+
+
 PROJECT_ROOT: Path = _find_project_root()
 
 # ---------- 后端 ----------
-BACKEND_DIR: Path = PROJECT_ROOT / "backend"
+BACKEND_DIR: Path = _find_backend_dir()
 APP_DIR: Path = BACKEND_DIR / "app"
 CONFIG_DIR: Path = BACKEND_DIR / "config"
 SQL_DIR: Path = BACKEND_DIR / "sql"

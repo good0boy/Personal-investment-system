@@ -423,12 +423,12 @@ def fundamental_weekly_job(run_date: str, *, trigger_type: str = "manual") -> di
     设计（2026-10-10 主人拍板：一次性补完、接受长时间运行）：
     - **子进程**运行 —— akshare 会话与主进程隔离，状态文件断点续传
       （`data/meta/backfill_fundamental_state.json`），中断重跑即续上；
-    - **`--stale-days 6` 而非 `--force`**（2026-10-11 整改）：`--force` 会让
+    - **`--stale-days 7` 而非 `--force`**（2026-10-11 整改）：`--force` 会让
       「状态 ok 就跳过」这条判据彻底失效 —— 每只标的每次都进待办，**断点续传
       名存实亡**。实测全量 9h、watchdog 上限 12h，余量只有 3h：一旦超时被杀，
       周二手动重跑又是从头 9 小时，同样大概率超时 → 最后几只永远拉不到。
-      `--stale-days 6` 的效果与 `--force` 对「每周全量刷新」**等价**（上一轮
-      成功于 7 天前，7 > 6 照常重拉），但本轮已完成的标的 updated_at=今天、
+      `--stale-days 7` 的效果与 `--force` 对「每周全量刷新」**等价**（上一轮
+      成功于 7 个自然日前，7 >= 7 照常重拉），但本轮已完成的标的 updated_at=今天、
       不再入待办 → **超时重跑只补没做完的那部分**，续传真兑现。
       （若将来改成"每周轮转 1/4"，用 `--shard-count/--shard-index` 分片，
       别用 stale-days 30：全量跑批会把所有标的刷成同一时刻，齐步振荡。）
@@ -451,7 +451,7 @@ def fundamental_weekly_job(run_date: str, *, trigger_type: str = "manual") -> di
 
     backend_root = Path(__file__).resolve().parents[2]
     res = run_with_watchdog(
-        [sys.executable, "-m", "tools.backfill_fundamental", "--stale-days", "6"],
+        [sys.executable, "-m", "tools.backfill_fundamental", "--stale-days", "7"],
         cwd=str(backend_root),
         timeout=_FUNDAMENTAL_TIMEOUT,
         name="基本面周频回补",

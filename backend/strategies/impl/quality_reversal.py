@@ -433,14 +433,22 @@ class QualityReversalStrategy(BaseStrategy):
 
         held = set(ctx.account.positions.keys())
         need = max_pos - ctx.account.position_count
-        target_amount = float(self.params["max_weight_per_stock"]) * ctx.total_asset
+        weight = float(self.params["max_weight_per_stock"])
+        target_amount = weight * ctx.total_asset
         bought = 0
         for symbol, _sc in ordered:
             if bought >= need:
                 break
             if symbol in held:
                 continue
-            ctx.account.order_buy(symbol, target_amount, reason="quality_reversal")
+            ctx.account.order_buy(
+                symbol,
+                target_amount,
+                reason="quality_reversal",
+                # 带上目标权重：挂单顺延成交时引擎按**当日**净值重算金额
+                # （否则用的是信号日快照金额，净值变了权重就偏了）
+                weight=weight,
+            )
             bought += 1
 
     def _ma_rise_mask(

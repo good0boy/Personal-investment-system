@@ -9,6 +9,23 @@
 #     docker compose -f deploy/docker-compose.yml up -d --build
 #     docker compose -f deploy/docker-compose.yml logs -f backend
 #     docker compose -f deploy/docker-compose.yml down
+#
+# ⚠️ 上线前必读（运维坑，都是实测踩过的）：
+#
+#  1. **不要与本地开发机同时跑补数**。baostock 的每日 5 万次配额与 6 小时
+#     黑名单封禁是**账号级**的，两台机器各跑各的会互相挤配额；触发封禁后
+#     两边一起挂 6 小时。要在本地调试先停掉服务器容器，或反之。
+#
+#  2. **每次重启容器都会触发启动补跑**（`catch_up_on_startup=true`），
+#     实测 30~90 分钟（补齐停机期间漏掉的交易日行情）。`docker compose restart`
+#     之后看到日志里一片"开始增量回补"属正常，不是故障。
+#
+#  3. **服务器上跑不了回测/参数寻优**（有意为之）：API 只有回测的**读**接口，
+#     没有触发入口；5 个定时任务（paper_daily / paper_intraday_check /
+#     fundamental_weekly / alert_daily_summary / catalog_check）全都不含重计算。
+#     回测与寻优走本地 CLI —— 全市场回测峰值 3383MB，2核4GB 扛不住。
+#
+#  4. 2核4GB 机型必配 4GB swap（指南 4.4 节），否则全量重算兜底时会 OOM。
 # ============================================================
 
 name: stock-system
@@ -29,10 +46,15 @@ services:
       PORT: "8000"
       APP_ENV: "prod"
       DEBUG: "false"
+      # 显式声明时区（镜像 ENV 已有，这里再写一遍是为了让运维在 compose
+      # 这一处就能看到 —— 调度 cron 全部按北京时间，换时区会让跑批错位）
+      TZ: "Asia/Shanghai"
       # 数据根目录指向挂载卷
       DATA_ROOT: "/app/data"
     volumes:
       # 数据与日志都挂出来，容器重建不丢数据
+      # ⚠️ 首次部署前务必在宿主机建好这两个目录，否则 docker 会以 root 创建，
+      #    后续在宿主机上备份/清理会撞权限（Linux 常见坑）。
       - ../data:/app/data
       - ../backend/logs:/app/logs
       # 配置文件挂出来，改配置不用重建镜像
@@ -40,6 +62,13 @@ services:
     ports:
       # 只在宿主机本地暴露，不对外；由 nginx 反代对外提供服务
       - "127.0.0.1:8000:8000"
+    # 跑批子进程（行情回补/因子重算/基本面）需要时间收尾，默认 10s 就 SIGTERM
+    # 会把正在跑的补数硬杀 —— 状态文件能续传，但会留下"半个报告期"和一次告警。
+    stop_grace_period: 90s
+    # ⚠️ 内存：**故意不设 mem_limit**。引擎全量重算峰值 3383MB（实测），
+    #    硬限制会触发容器 OOM-kill、数据停在半路；宁可让它用 swap 慢，也别被杀掉。
+    #    2核4GB 机型请务必按部署指南 4.4 节配 4GB swap。
+    # mem_reservation: 1g      # 仅软预留（不影响运行），可按需启用
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
       interval: 30s

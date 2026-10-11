@@ -629,7 +629,7 @@ def main() -> int:
         type=int,
         default=None,
         metavar="N",
-        help="增量语义：除待办外，同时重拉「上次更新距今超过 N 天」的逐只数据集。"
+        help="增量语义：除待办外，同时重拉「上次更新距今 >= N 天」的逐只数据集（自然日差）。"
         "用于周频轮转（如 N=30 → 稳态每周重拉 ~1/4 市场，季报披露后最多滞后 4 周被刷到）。"
         "★ 调度器用的是 N=6（每周一次全量刷新，但**断点续传有效** —— 本轮已成功的"
         "标的 updated_at=今天，下次不再入待办）；`--force` 会让续传失效，别用。"
@@ -705,13 +705,24 @@ def main() -> int:
                 todo.append(s)
             elif args.stale_days is not None:
                 # --stale-days：状态"成功"但太久没刷新的也重拉（周频轮转的增量语义）
+                #
+                # ★ 用「自然日差 +1」而不是 `timedelta.days`（2026-10-11 修复）：
+                #   `.days` 是**向下取整**。上轮周一 06:00 起跑、9 小时跑完，
+                #   绝大多数标的的 updated_at 落在 06:01~15:00 → 本轮 age 取整成
+                #   6 天 → `6 > 6` 不成立 → **整周全部跳过**，"每周全量刷新"
+                #   静默退化成"每 N 周刷一次"（N 随上轮运行时长浮动）。
+                # 改成按自然日差判阈（>=），周一 06:00 跑时 age=7 ≥ 6 稳定成立。
                 updated = rec_ds.get("updated_at") or ""
-                age_days = (
-                    (datetime.now() - datetime.fromisoformat(updated)).days
-                    if updated
-                    else 10**6  # 无时间戳 = 更要刷
-                )
-                if age_days > args.stale_days:
+                if updated:
+                    try:
+                        age_days = (
+                            datetime.now().date() - datetime.fromisoformat(updated).date()
+                        ).days
+                    except ValueError:
+                        age_days = 10**6  # 时间戳坏了 → 更要刷
+                else:
+                    age_days = 10**6  # 无时间戳 = 更要刷
+                if age_days >= args.stale_days:
                     todo.append(s)
         passes[dataset] = todo
         logger.info(f"[{dataset}] 待办 {len(todo)} 只")

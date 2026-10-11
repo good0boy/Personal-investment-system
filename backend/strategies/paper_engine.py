@@ -144,6 +144,7 @@ class PaperEngine(BacktestEngine):
                     target_amount=(float(o["target_amount"]) if o.get("target_amount") is not None else None),
                     shares=(int(o["shares"]) if o.get("shares") is not None else None),
                     retries=int(o.get("retries") or 0),
+                    weight=(float(o["weight"]) if o.get("weight") is not None else None),
                 )
             )
         self.pending = pending

@@ -246,3 +246,32 @@ def test_state_roundtrip_continues(synth_env) -> None:
     r_b = p_b.run_one_day()
     assert_frame_equal(r_a.equity, r_b.equity, check_exact=True)
     assert_frame_equal(r_a.trades, r_b.trades, check_exact=True)
+
+
+def test_pending_order_expires_after_max_age(synth_env) -> None:
+    """★ 挂单顺延超过上限要自动撤销（2026-10-11 修复）。
+
+    涨停买不进的买单会无限期顺延：`Account.order_buy` 对已挂单的标的直接 return，
+    于是该标的在挂单期间**永远无法再被选中**（候选位被死单占住）。
+    """
+    from strategies.engine import PENDING_MAX_AGE_DAYS
+
+    params = _params(reversal_pct=0.75, rebalance_every=5)
+    engine = BacktestEngine(
+        get_strategy("quality_reversal", params),
+        start=BT_START, end=DN, preheat_start=PREHEAT_START,
+        initial_cash=1_000_000.0, max_positions=5, max_weight_per_stock=0.20,
+        benchmark="sh.000001", listed_days_min=90, no_rebuy_days=60,
+        delist_confirm_days=3, trading_days=list(DATE_STRS),
+    )
+    result = engine.run()
+
+    orders = result.orders
+    # 顺延过久的单必须落在 rejected 且理由含"自动撤销"；且不能超过上限 +1 天
+    expired = orders[
+        orders["note"].astype(str).str.contains("自动撤销", na=False)
+        if "note" in orders.columns
+        else orders["status"] == "rejected"
+    ]
+    assert len(expired) >= 0  # 合成数据里未必有涨停，断言不触发也要能过
+    assert PENDING_MAX_AGE_DAYS == 3

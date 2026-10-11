@@ -395,6 +395,18 @@ class Position:
         return self.entry_price * self.shares
 
 
+#: 挂单顺延超过多少个交易日自动撤销（成交不了就别一直占着候选位）
+PENDING_MAX_AGE_DAYS = 3
+
+
+def _trading_day_distance(days: list[str], frm: str, to: str) -> int | None:
+    """两个交易日之间的交易日距离（同日=0）；任一不在序列里返回 None。"""
+    try:
+        return days.index(to) - days.index(frm)
+    except ValueError:
+        return None
+
+
 @dataclass
 class Order:
     signal_date: str
@@ -407,6 +419,10 @@ class Order:
     shares: int | None = None
     #: 已顺延重试的交易日数
     retries: int = 0
+    #: 买单的目标**权重**（下单时快照）。挂单顺延时按**成交当日**的
+    #: `weight × total_asset` 重算金额，否则挂 3 天后成交的金额还是 3 天前的
+    #: 净值算出来的 —— 10 只票一起成交就可能整体超配（2026-10-11 修复）。
+    weight: float | None = None
 
 
 # ======================================================================
@@ -462,7 +478,14 @@ class Account:
         return self._e.last_sell_date.get(symbol)
 
     # ---- 下单 ----
-    def order_buy(self, symbol: str, amount: float, *, reason: str = "") -> None:
+    def order_buy(
+        self,
+        symbol: str,
+        amount: float,
+        *,
+        reason: str = "",
+        weight: float | None = None,
+    ) -> None:
         if symbol in self._e.positions:
             return
         if any(o.side == "buy" and o.symbol == symbol for o in self._e.pending):
@@ -475,6 +498,7 @@ class Account:
                 side="buy",
                 reason=reason,
                 target_amount=float(amount),
+                weight=None if weight is None else float(weight),
             )
         )
 
@@ -984,6 +1008,12 @@ class BacktestEngine:
         if not np.isfinite(price) or price <= 0:
             return
         want = float(order.target_amount or 0.0)
+        # ★ 顺延成交时按**当日**净值重算目标金额（2026-10-11）：挂单是按信号日的
+        #   total_asset 算的金额，若挂了几天才成交（涨停买不进等），净值已经变了，
+        #   照旧用旧金额会偏离目标权重（多票同时解封时整体超配）。
+        #   `target_amount` 仍作上限 —— 信号日的金额是策略的原始意图，不放大。
+        if order.weight is not None and order.signal_date != day:
+            want = min(want, float(order.weight) * float(self.total_asset))
         # 目标金额与可用现金取小：不能透支
         budget = min(want, self.cash)
         shares = cost_model.max_affordable_shares(budget, price)
@@ -1007,6 +1037,32 @@ class BacktestEngine:
         self._record_order(
             order, day, price, price * shares, "filled", order.reason, shares=shares
         )
+
+    def _expire_pending(self, di: int, day: str) -> None:
+        """撤销顺延过久的挂单（默认 3 个交易日）。
+
+        ★ 为什么必须有（2026-10-11）：涨停/停牌时买单可能一直挂着。此前没有
+          任何撤销机制，挂单会**无限期**顺延，而 `Account.order_buy` 对已挂单的
+          标的直接 return —— 于是该标的在挂单期间永远无法再被选中；持仓同理
+          （卖单挂着时 `_sell_side` 每��重复 order_sell，靠去重挡住）。
+          按信号日与今日的**交易日距离**判定，不看 retries（同日内可能 +2）。
+        """
+        if not self.pending:
+            return
+        alive: list[Order] = []
+        for o in self.pending:
+            age = _trading_day_distance(self.days, o.signal_date, day)
+            if age is not None and age > PENDING_MAX_AGE_DAYS:
+                self._record_order(
+                    o, day, None, None, "rejected",
+                    f"挂单顺延 {age} 个交易日未成交，自动撤销",
+                )
+                logger.info(
+                    f"[engine] {o.symbol} {o.side} 挂单顺延 {age} 个交易日未成交，已撤销"
+                )
+                continue
+            alive.append(o)
+        self.pending = alive
 
     def _record_order(
         self,
@@ -1088,6 +1144,11 @@ class BacktestEngine:
 
             # 0) 退市/数据终止的持仓强平（技术架构 §6.3 要点 #10）
             self._force_liquidate_delisted(di, day)
+
+            # 0) 撤销过期挂单（2026-10-11）：挂单无限期顺延会同时占住资金与
+            #    **候选位**（`order_buy` 对已挂单的标的直接 return），该标的在
+            #    挂单期间永远无法再被选中。顺延超过 N 个交易日就作废。
+            self._expire_pending(di, day)
 
             # 1) 今日开盘：执行昨日挂出的买单 + 遗留的顺延卖单
             self._execute_pending(di, day)
@@ -1189,6 +1250,7 @@ class BacktestEngine:
                     "target_amount": o.target_amount,
                     "shares": o.shares,
                     "retries": int(o.retries),
+                    "weight": (None if o.weight is None else float(o.weight)),
                 }
                 for o in self.pending
             ],

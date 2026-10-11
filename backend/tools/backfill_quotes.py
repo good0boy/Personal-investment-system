@@ -183,6 +183,7 @@ def _do_one(
     end: str,
     *,
     is_index: bool,
+    latest_trading_day: str | None = None,
 ) -> str:
     """回补一只，就地更新 rec。返回状态字符串。"""
     t0 = time.perf_counter()
@@ -219,11 +220,17 @@ def _do_one(
 
     dates = df["date"]
     last_day = str(dates.max())[:10]
-    # 请求区间右端都取不到数据 = 已退市/长期停牌（baostock 对退市股返回空或
-    # 只到退市日）。标终态，别让它每晚空跑一次。
-    retired = bool(end) and last_day < str(end)[:10]
+    # ★ 退市判定必须跟**交易日**比，不能跟 `end`（自然日）比（2026-10-11 修复）：
+    #   `end` 默认 date.today()，非交易日（周末/节假日）跑批时 last_day 会
+    #   天然小于它 → 当天全市场都会被标成"退市" → `_is_done` 恒 True →
+    #   **从此永久不再回补、且无自愈路径**。判据用 main 已算好的最新交易日。
+    ref_day = latest_trading_day or end
+    retired = bool(ref_day) and last_day < str(ref_day)[:10]
     rec.update(
         status="ok",
+        attempts=0,  # ★ 成功即清零（2026-10-11）：否则连续失败 5 次的标的会被
+                     #   `_is_done` 的 attempts 门**永久**跳过，网络早已恢复也
+                     #   不再重试 —— attempts 门只该管"连续失败"，不是"历史失败过"。
         rows=len(df),
         first_date=str(dates.min())[:10],
         last_date=last_day,
@@ -404,7 +411,10 @@ def main() -> int:
 
     for i, symbol in enumerate(todo, 1):
         rec = state["symbols"].setdefault(symbol, {})
-        st = _do_one(symbol, rec, START_DATE, end, is_index=False)
+        st = _do_one(
+            symbol, rec, START_DATE, end,
+            is_index=False, latest_trading_day=latest_trading_day,
+        )
         n_done += 1
         if st == "failed":
             failed.append(symbol)

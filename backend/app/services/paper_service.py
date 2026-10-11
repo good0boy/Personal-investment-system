@@ -116,21 +116,80 @@ def ensure_default_account() -> dict[str, Any]:
     # 策略切换（2026-10-09）：config.yaml 的 paper.strategy 与账户行不一致时落库。
     # 策略变化会触发全量重算（净值历史整体重写）—— 设计使然，主人已知情。
     cfg_strategy = (cfg.strategy or "").strip()
-    if cfg_strategy and str(row.get("strategy") or "") != cfg_strategy:
+    cfg_params = cfg.params or {}
+    # ★ 参数变更也要落库（2026-10-11）：原先只在**策略名**变化时写 param_json，
+    #   于是改 config.yaml 的 paper.params（hold_days_max / rebalance_every /
+    #   阈值…）对跑批**零影响**，DB 里的旧 param_json 继续生效 ——
+    #   而 config.yaml 的注释却写着"变更后重启服务生效"。参数变更同样会重写
+    #   整条净值历史，处置与策略切换同等（作废旧产物 + 全量重算）。
+    #
+    # ★ 两个防护（2026-10-11 二次复审加）：
+    #   ① json.loads 必须 try —— param_json 损坏时抛异常会让**每次 GET 账户列表**
+    #      直接 500（前端轮询接口）。
+    #   ② 作废产物**只在真正跑批时做**：`ensure_default_account` 也被 GET 列表接口
+    #      调用，若在这里无条件 `_invalidate_paper_artifacts`，前端每轮询一次就
+    #      删一次净值 → 反复全量重算（且 cfg.params 为空而 DB 有历史 param_json
+    #      时恒成立）。所以比较结果只**记账**（`_paper_config_drift`），由
+    #      `run_paper_day` 在跑批入口消费。
+    try:
+        db_params = json.loads(row.get("param_json") or "{}") if row.get("param_json") else {}
+    except (TypeError, json.JSONDecodeError) as exc:
+        logger.warning(f"[paper] 账户 param_json 解析失败，按「不变」处理：{exc!r}")
+        db_params = {}
+    params_changed = bool(cfg_params) and db_params != cfg_params
+    strategy_changed = bool(cfg_strategy) and str(row.get("strategy") or "") != cfg_strategy
+    _paper_config_drift["reason"] = (
+        ["策略切换"] if strategy_changed else []
+    ) + (["参数变更"] if params_changed else [])
+    if cfg_strategy and strategy_changed:
+        # ★ 策略切换：**立即**落库 + 作废旧产物（与原行为一致）。策略换代是重大
+        #   事件，前端要立刻切到新口径的净值；且它天然只在切换那一刻为真，
+        #   不会被 GET 轮询反复触发。
         params_json = (
-            json.dumps(cfg.params, ensure_ascii=False) if cfg.params else None
+            json.dumps(cfg_params, ensure_ascii=False) if cfg_params else None
         )
-        meta_repo.update_paper_account_strategy(cfg.default_account_id, cfg_strategy, params_json)
-        # ★ 旧策略产物必须同步作废：幂等闸（last_nav_date >= run_date → 跳过）
-        #   只看日期不看策略 —— 不删的话，旧 momentum 净值会一直展示在
-        #   前端净值曲线上，且今晚 23:00 的跑批也会被幂等闸拦住不重算。
+        meta_repo.update_paper_account_strategy(
+            cfg.default_account_id, cfg_strategy, params_json
+        )
+        # 幂等闸（last_nav_date >= run_date → 跳过）只看日期不看策略，
+        # 不删的话旧策略净值会一直展示、且当晚跑批会被幂等闸拦住。
         removed = _invalidate_paper_artifacts(cfg.default_account_id)
         logger.info(
-            f"[paper] 模拟盘策略切换：{row.get('strategy')!r} -> {cfg_strategy!r}（原策略下线，"
-            f"净值自 {PAPER_START_DATE} 起全量重算）；已作废旧产物 {removed} 份"
+            f"[paper] 模拟盘策略切换：{row.get('strategy')!r} -> {cfg_strategy!r}，"
+            f"净值自 {PAPER_START_DATE} 起全量重算；已作废旧产物 {removed} 份"
         )
         row = meta_repo.get_paper_account(cfg.default_account_id)
+    elif params_changed:
+        # ★ 参数变更：**只记账、不在这里作废**（与策略切换不同）——
+        #   ensure_default_account 也被 GET 列表接口调用，若在这里删产物，
+        #   前端每轮询一次就删一次净值 → 反复全量重算（代价极高且不易察觉）。
+        _paper_config_drift["pending"] = True
+        logger.info(
+            "[paper] 检测到参数与 DB 不一致，将在下次跑批时落库并作废旧产物"
+        )
     return row
+
+
+#: 配置漂移的记账（本进程内）。ensure_default_account 被 GET 列表接口调用，
+#: 绝不能在那里删产物 —— 前端轮询会反复触发全量重算。
+_paper_config_drift: dict[str, Any] = {"pending": False, "reason": []}
+
+
+def _consume_config_drift(account_id: str) -> dict[str, Any] | None:
+    """跑批入口消费配置漂移：落库 param_json + 作废旧产物（可重入）。"""
+    if not _paper_config_drift.pop("pending", False):
+        return None
+    cfg = settings.paper
+    params_json = json.dumps(cfg.params or {}, ensure_ascii=False) if cfg.params else None
+    meta_repo.update_paper_account_strategy(
+        account_id, (cfg.strategy or "").strip(), params_json
+    )
+    removed = _invalidate_paper_artifacts(account_id)
+    logger.info(
+        f"[paper] 配置漂移已处置（{' + '.join(_paper_config_drift['reason'])}）："
+        f"净值自 {PAPER_START_DATE} 起全量重算；已作废旧产物 {removed} 份"
+    )
+    return {"reason": _paper_config_drift["reason"], "removed": removed}
 
 
 def _invalidate_paper_artifacts(account_id: str) -> int:
@@ -268,10 +327,28 @@ def run_paper_day(
         account = ensure_default_account()
         account_id = account["id"]
 
+        # 配置漂移（策略/参数与 DB 不一致）在**跑批入口**处置：落库 param_json
+        # + 作废旧产物（净值重写）。刻意不在 ensure_default_account 里做 ——
+        # 它也被 GET 列表接口调用，前端轮询会反复触发全量重算。
+        drift = _consume_config_drift(account_id)
+        if drift:
+            account = meta_repo.get_paper_account(account_id) or account
+
         # 幂等：已有不早于 run_date 的净值 → 跳过。
         # 场景：23:00 跑 T 成功后，次日启动补跑扫描出漏掉的 T-1，
         # 若不拦住就会把净值从 T 覆盖回 T-1（全量重算的补跑陷阱）。
         done = last_nav_date(account_id)
+        # ★ 净值**超前**于日历要报错而不是跳过（2026-10-11）：`done > run_date`
+        #   时下面所有跑批都会判 skipped、job 记 **success**、无告警 ——
+        #   前端只看到净值日期停在未来且永远不前进。触发原因：系统时钟回拨、
+        #   nav.parquet / state.json 被手工改到未来。现有代码对"净值落后"有
+        #   各种兜底，对"净值超前"零检测。
+        if done is not None and done > run_date:
+            raise PaperError(
+                f"净值日期 {done} 晚于最新交易日 {run_date} —— 疑似系统时钟回拨或产物被误改。"
+                f"为避免把坏状态当正常跳过，本次跑批判失败并告警；"
+                f"请核对系统时间与 data/paper/{account_id}/nav.parquet 的最大日期。"
+            )
         if done is not None and done >= run_date:
             return {"skipped": True, "reason": f"净值已更新至 {done}（不早于 {run_date}）"}
 
@@ -670,19 +747,26 @@ def _dispatch_alerts(
 ) -> dict[str, Any]:
     """派发交易提醒（模块 5）。**任何异常都不许冒泡**。
 
-    自动判断闸门：`notify=None` 时，只有 `run_date` 是"最近一个已发生交易日"
-    才推。判据用 `calendar.latest_trading_day()`（而不是"今天"）——
-    因为 23:00 跑批时"今天"就是 run_date，但补跑时不是。
+    自动判断闸门：`notify=None` 时，只要 `run_date` 是 nav 的**最后一天**就推。
+    ★ 2026-10-11 整改：判据原先是 "`run_date >= calendar.latest_trading_day()`"，
+      于是「T-1 的 23:00 跑批失败 → 次日上午补跑补上 T-1」这个**最常见的失败恢复
+      形态**恒判 False（补跑时 latest 已是 T，T-1 >= T 为假）→ T-1 的成交
+      **永远不会推送**：当晚该推的那次失败了、补跑又不推，用户既没提醒、净值也冻结。
+      改为数据驱动：`run_date` 是本次跑批后的净值最后一天就推（重复推送由
+      `alert_log.event_key` 唯一键幂等挡住，不依赖日历）。
     """
     if not settings.alert.enabled:
         return {"skipped": True, "reason": "提醒功能未开启"}
 
     if notify is None:
-        latest = _latest_trading_day()
-        notify = bool(latest) and run_date >= latest
+        nav_last = last_nav_date(account_id)
+        notify = nav_last == run_date
         if not notify:
-            logger.debug(
-                f"[paper] {run_date} 非最新交易日（最新 {latest}），跳过交易提醒"
+            latest = _latest_trading_day()
+            logger.info(
+                f"[paper] {run_date} 未推送交易提醒"
+                f"（净值最后一天={nav_last}，最新交易日={latest}）"
+                f"—— 若本次跑批确实产出了新净值，请检查 alert_log 幂等键"
             )
 
     if not notify:

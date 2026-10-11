@@ -255,6 +255,20 @@ def run_startup_catch_up() -> dict[str, Any]:
     if not settings.scheduler.catch_up_on_startup:
         return {"enabled": False}
 
+    # ★ 并发守卫下沉到这里（2026-10-11）：`POST /system/catch-up` 直连本函数，
+    #   而 running 标记原先只在 `start_catch_up_background` 的线程里设置 ——
+    #   启动补跑进行中再调一次，会起第二条 catch_up 循环：抢到 _RUN_LOCK 的
+    #   正常跑，另一个每个缺失日抛 PaperError → job_run_log 记 failed →
+    #   **每个缺失交易日各推一条"跑批失败"企微告警**（cron 路径早已修过，
+    #   这条同步入口漏了）。
+    if catch_up_running():
+        return {
+            "enabled": True,
+            "status": "skipped",
+            "reason": "catch_up_already_running",
+            "note": "补跑已在进行中，请勿重复触发",
+        }
+
     result: dict[str, Any] = {
         "enabled": True,
         "checked_at": datetime.now().isoformat(timespec="seconds"),

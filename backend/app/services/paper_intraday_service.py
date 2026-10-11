@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +67,14 @@ def _load_account(account_id: str | None) -> tuple[dict[str, Any] | None, Path |
 
 
 def _current_holdings(pdir: Path) -> pd.DataFrame:
-    """最新一天的持仓（positions.parquet 是逐日快照）。"""
+    """最新一天的持仓（positions.parquet 是逐日快照），**带 is_st 列**。
+
+    ★ 必须补 is_st（2026-10-11 修复）：`POSITION_COLUMNS` 契约里没有 ST 标记，
+      而 `price_limit_pct(symbol, day, is_st=None)` 会跳过 ST 分支 → ST 股按
+      ±10% 算限幅 → 跌停价（前收×0.95）永远高于阈值（×0.9）→ **ST 跌停永不告警**，
+      恰恰漏掉"跌停卖不出去、要顺延"最该预警的场景。
+      从本地行情的**最新交易日截面**读 is_st（ST 是逐日字段，不能用陈旧值）。
+    """
     p = pdir / "positions.parquet"
     if not p.exists():
         return pd.DataFrame()
@@ -74,7 +82,29 @@ def _current_holdings(pdir: Path) -> pd.DataFrame:
     if df.empty:
         return df
     last = str(df["date"].max())[:10]
-    return df[df["date"].astype(str).str[:10] == last].copy()
+    df = df[df["date"].astype(str).str[:10] == last].copy()
+    if "is_st" in df.columns:
+        return df
+    st_map = _latest_is_st_map(df["symbol"].astype(str).tolist())
+    df["is_st"] = df["symbol"].astype(str).map(st_map).fillna(0).astype(int)
+    return df
+
+
+def _latest_is_st_map(symbols: list[str]) -> dict[str, int]:
+    """各标的**最近一个交易日**的 is_st（读不到按 0 = 非 ST 处理）。"""
+    out: dict[str, int] = {}
+    for sym in symbols:
+        try:
+            q = data_store.read_quotes(sym, None, None, columns=["date", "is_st"])
+        except Exception as exc:
+            logger.warning(f"[intraday] {sym} 读 is_st 失败，按非 ST 处理：{exc!r}")
+            out[sym] = 0
+            continue
+        if q is None or q.empty:
+            out[sym] = 0
+            continue
+        out[sym] = int(q["is_st"].fillna(0).iloc[-1])
+    return out
 
 
 def _fuyao_prices(symbols: list[str]) -> tuple[dict[str, float], dict[str, float], str | None]:
@@ -162,9 +192,21 @@ def _hold_days(entry_date: str, today: str) -> int:
 
 
 def evaluate_holdings(
-    holdings: pd.DataFrame, today: str, params: dict[str, Any]
+    holdings: pd.DataFrame,
+    today: str,
+    params: dict[str, Any],
+    data_date: str | None = None,
 ) -> list[dict[str, Any]]:
-    """对每只持仓评估清仓条件，返回预警明细（空列表 = 无预警）。"""
+    """对每只持仓评估清仓条件，返回预警明细（空列表 = 无预警）。
+
+    ★ `today` 必须是**真实今天**（2026-10-11 整改）：原先传的是 positions 快照日，
+      跑批失败/延迟时快照停在 09-30，于是
+        · `event_key=intraday_exit|{id}|{快照日}` 天天相同 → 第二天起被
+          `alert_log` 唯一键判为"已派发" → **推送永久静默**，直到某天跑批成功；
+        · `_hold_days(entry, 快照日)` 少算交易日（实测 7 vs 9）→ time_stop
+          在 hold_days_max 边界上单向漏报。
+      `data_date` 只用于日志/回执标注快照日，不参与任何判断。
+    """
     hold_max = int(params.get("hold_days_max", 30))
     r20_max = float(params.get("realized_ret20_max", 0.30))
     sl_mult = float(params.get("stop_loss_p_mult", 0.0) or 0.0)
@@ -203,7 +245,7 @@ def evaluate_holdings(
             #   （2026-10-11 修复）：主板 ±10% 时碰巧正确，但创业板 ±20% 会**误报**
             #   （跌 10% 就喊"逼近跌停"），ST ±5% 又**永不报警**（跌停价 9.50 > 9.09）
             #   —— 恰恰漏掉"跌停卖不出去、要顺延"最该预警的场景。
-            limit = price_limit_pct(sym, today, row.get("st"))
+            limit = price_limit_pct(sym, today, row.get("is_st", row.get("st")))
             if price <= pc * (1.0 - limit) * _LIMIT_DOWN_TOL:
                 reasons.append(
                     f"limit_down（最新价 {price:.2f} 封跌停，前收 {pc:.2f}，限幅 {limit:.0%}）"
@@ -247,8 +289,16 @@ def run_intraday_check(*, account_id: str | None = None) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         params = {}
 
-    today = str(holdings["date"].max())[:10]
-    alerts = evaluate_holdings(holdings, today, params)
+    # 快照日（只标注）与真实今天（判断 + 幂等）必须分开 —— 见 evaluate_holdings
+    data_date = str(holdings["date"].max())[:10]
+    today = date.today().strftime("%Y-%m-%d")
+    if data_date < today:
+        logger.warning(
+            f"[intraday] 持仓快照日 {data_date} 落后于今天 {today}"
+            f"（跑批未成功？）—— 已按真实今天计算持有天数与幂等键，"
+            f"但持仓/成本价可能已不是最新的"
+        )
+    alerts = evaluate_holdings(holdings, today, params, data_date=data_date)
 
     if not alerts:
         logger.info("[intraday] 14:45 检查：无清仓预警")
