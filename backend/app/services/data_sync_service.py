@@ -51,8 +51,11 @@ READY_PROBE_SYMBOLS: tuple[str, ...] = ("sh.600519", "sh.000001")
 
 _INDEX_SYMBOL = "sh.000001"
 
-#: 子步骤超时：行情回补 4792 只 × 单只一请求，实测 30~50 分钟；其余步骤放宽到 60 分钟。
-_QUOTES_TIMEOUT = 90 * 60
+#: 子步骤超时：行情回补正常 30~50 分钟；但 baostock 降速时实测 ~11 只/分钟，
+#: 2500 只缺口需 ~4 小时（2026-10-11 实证：90 分钟上限被整体超时击穿，
+#: 回补永远到不了覆盖率闸门）→ 上限放宽到 6 小时。
+#: 挂死场景不靠整体超时兜底，靠 stall_limit=15min 的 mtime 心跳杀进程。
+_QUOTES_TIMEOUT = 6 * 60 * 60
 _STEP_TIMEOUT = 60 * 60
 
 #: backend 目录（子进程的 cwd —— `python -m tools.xxx` 需要在 backend 下才能解析模块）
