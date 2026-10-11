@@ -52,7 +52,13 @@ ssh "$SERVER" "mkdir -p '$REMOTE_DIR/data' '$REMOTE_DIR/backend/logs' && echo ' 
 echo
 
 # ---- 2. 同步代码与数据（排除不该进服务器的东西）----
-echo "▸ 同步项目（约 2.6GB，视带宽 1~3 小时；可随时 Ctrl-C，重跑即续传）..."
+# 说明（2026-10-11 整改）：
+#   · 排除 .idea/.workbuddy：本地 IDE/工作助手配置，服务器用不上；
+#   · data/backtest + data/sweep **要同步**：前端「策略回测/参数寻优」页是纯读
+#     接口，服务器没这两份产物页面就是空白（134M + 841K，零头而已）；
+#   · .env **必须同步**：compose 的 env_file 从服务器项目根读它
+#     （FUYAO_API_KEY / 企微 webhook 都在里面）。同步完自动收紧为 600。
+echo "▸ 同步项目（约 2.7GB，视带宽 1~3 小时；可随时 Ctrl-C，重跑即续传）..."
 rsync -avz \
   --delete \
   --partial \
@@ -65,12 +71,17 @@ rsync -avz \
   --exclude='*.pyc' \
   --exclude='.pytest_cache/' \
   --exclude='.ruff_cache/' \
+  --exclude='.idea/' \
+  --exclude='.workbuddy/' \
   --exclude='backend/logs/' \
   --exclude='frontend/dist/' \
-  --exclude='data/backtest/' \
-  --exclude='data/sweep/' \
   --exclude='*.log' \
   "$LOCAL_DIR/" "$SERVER:$REMOTE_DIR/"
+echo
+
+# ---- 3. 密钥文件收紧权限（.env 里有 FUYAO_API_KEY / 企微凭据）----
+echo "▸ 收紧服务器上 .env 权限（600）..."
+ssh "$SERVER" "chmod 600 '$REMOTE_DIR/.env' && echo '  ok'"
 echo
 
 echo "✓ 同步完成"
