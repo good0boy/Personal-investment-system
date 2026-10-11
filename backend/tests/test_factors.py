@@ -656,12 +656,55 @@ def test_stale_reasons_empty_when_covered(tmp_path, monkeypatch, factor_dir) -> 
     _patch_manifest(tmp_path, monkeypatch)
     defn = loader.get_factor("ret_5")
     manifest.factor_file(defn).parent.mkdir(parents=True, exist_ok=True)
+    # 产物必须是真实 parquet（date 列覆盖到声称的 end）——
+    # 2026-10-11 起清单与产物做一致性校验，假产物（b"x"）会被判"产物无法读取"
+    claimed_end = "2026-09-17"
+    _write_minimal_factor_parquet(manifest.factor_file(defn), claimed_end)
+    entry = {
+        "params_key": defn.params_key,
+        "interval": {"start": "2020-01-02", "end": claimed_end},
+    }
+    assert manifest.stale_reasons(defn, entry, start="2021-01-01", end="2025-01-01") == []
+
+
+def test_stale_reasons_detects_manifest_ahead_of_artifact(
+    tmp_path, monkeypatch, factor_dir
+) -> None:
+    """★ 清单与产物一致性校验（2026-10-11 事故回归）：清单声称覆盖到 10-09、
+    产物实际只到 09-30（脏数据清理只删行没回滚清单）→ 必须判 stale，
+    否则缺口静默带入撮合。"""
+    _patch_manifest(tmp_path, monkeypatch)
+    defn = loader.get_factor("ret_5")
+    manifest.factor_file(defn).parent.mkdir(parents=True, exist_ok=True)
+    _write_minimal_factor_parquet(manifest.factor_file(defn), "2026-09-30")
+    entry = {
+        "params_key": defn.params_key,
+        "interval": {"start": "2020-01-02", "end": "2026-10-09"},
+    }
+    reasons = manifest.stale_reasons(defn, entry, start=None, end="2026-10-09")
+    assert any("清单与产物不一致" in r for r in reasons)
+
+
+def test_stale_reasons_unreadable_artifact(tmp_path, monkeypatch, factor_dir) -> None:
+    """产物损坏（非法 parquet）→ 判 stale（宁可重算也不带病复用）。"""
+    _patch_manifest(tmp_path, monkeypatch)
+    defn = loader.get_factor("ret_5")
+    manifest.factor_file(defn).parent.mkdir(parents=True, exist_ok=True)
     manifest.factor_file(defn).write_bytes(b"x")
     entry = {
         "params_key": defn.params_key,
         "interval": {"start": "2020-01-02", "end": "2026-09-17"},
     }
-    assert manifest.stale_reasons(defn, entry, start="2021-01-01", end="2025-01-01") == []
+    reasons = manifest.stale_reasons(defn, entry, start="2021-01-01", end="2025-01-01")
+    assert any("产物无法读取" in r for r in reasons)
+
+
+def _write_minimal_factor_parquet(path, last_date: str) -> None:
+    """写一个只含 date 列、最后一行为 last_date 的最小因子 parquet。"""
+    import pandas as pd
+
+    df = pd.DataFrame({"date": pd.to_datetime(["2026-09-16", last_date])})
+    df.to_parquet(path, index=False)
 
 
 def test_factor_file_uses_data_store_single_implementation(factor_dir) -> None:

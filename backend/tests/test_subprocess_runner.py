@@ -125,3 +125,21 @@ def test_nonzero_exit_not_ok(tmp_path: Path, rc: int) -> None:
     assert res["ok"] is False
     assert res["returncode"] == rc
     assert "stalled" not in res and "timeout" not in res
+
+
+def test_unicode_print_does_not_crash(tmp_path: Path) -> None:
+    """★ 编码回归（2026-10-11 因子重算事故）：子进程 stdout 重定向到文件时
+    中文 Windows 默认 GBK，打印 ⏭/✅ 等符号会 UnicodeEncodeError 直接崩掉
+    （行情回补 3 小时的成果死在一个 ⏭ 上）。run_with_watchdog 必须注入
+    PYTHONIOENCODING=utf-8 保证符号安全落盘。
+    """
+    res = run_with_watchdog(
+        [PY, "-c", "print('⏭ 跳过'); print('✅ 完成'); print('❌ 失败')"],
+        cwd=str(tmp_path),
+        timeout=60,
+        name="t-unicode",
+        interval=0.2,
+    )
+    assert res["ok"] is True, f"Unicode 打印崩掉子进程：{res}"
+    tail = "\n".join(res["tail"])
+    assert "⏭" in tail and "✅" in tail

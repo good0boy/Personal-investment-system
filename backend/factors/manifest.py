@@ -153,11 +153,39 @@ def stale_reasons(
         )
 
     interval = entry.get("interval") or {}
+    claimed_end = interval.get("end") or ""
+    artifact_end = _artifact_max_date(factor_file(defn))
+    if artifact_end is None:
+        reasons.append("产物无法读取（文件损坏或列缺失）")
+    elif claimed_end and str(artifact_end) < str(claimed_end):
+        # ★ 清单与产物一致性校验（2026-10-11 事故新增）：脏数据清理只删了
+        #   parquet 行、没回滚清单 date_end → 因子重算误判"已覆盖最新"全部跳过，
+        #   缺口静默带入撮合。清单是状态、产物是真相，两者必须对上。
+        reasons.append(
+            f"清单声称覆盖到 {claimed_end}，产物实际只到 {artifact_end}"
+            f"（清单与产物不一致）"
+        )
     if end and (interval.get("end") or "") < str(end):
         reasons.append(f"已有产物只覆盖到 {interval.get('end') or '<未知>'}，需要到 {end}")
     if start and (interval.get("start") or "") > str(start):
         reasons.append(f"已有产物从 {interval.get('start') or '<未知>'} 开始，需要从 {start}")
     return reasons
+
+
+def _artifact_max_date(path: Path) -> str | None:
+    """产物实际最新日期（parquet date 列的 max）。
+
+    读不出来（损坏/无 date 列）返回 None —— 调用方判 stale，
+    宁可重算也不带病复用（45s 重算成本远小于静默缺口）。
+    """
+    try:
+        import duckdb  # noqa: PLC0415 - 函数内导入，避免 CLI 冷启动无谓依赖
+
+        sql = f"SELECT max(date) FROM read_parquet('{path.as_posix()}')"  # noqa: S608
+        row = duckdb.execute(sql).fetchone()
+        return str(row[0])[:10] if row and row[0] is not None else None
+    except Exception:
+        return None
 
 
 __all__ = [

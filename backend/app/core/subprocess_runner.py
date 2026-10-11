@@ -26,6 +26,7 @@ backfill_fundamental 每通道 25 只），状态文件 mtime 就是天然心跳
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import time
@@ -79,12 +80,18 @@ def run_with_watchdog(
     outcome: dict[str, Any] = {}
 
     try:
+        # 子进程 stdout 重定向到文件时用系统默认编码（中文 Windows = GBK），
+        # 工具脚本日志里的 Unicode 符号（⏭/✅/❌）会触发 UnicodeEncodeError
+        # 直接把进程干崩（2026-10-11 因子重算事故：行情回补 3 小时的成果
+        # 死在一个 ⏭ 符号上）。强制 UTF-8 —— 与 _read_tail 的 utf-8 解码一致。
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
         proc = subprocess.Popen(
             cmd,
             cwd=str(cwd),
             stdout=out_file,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
+            env=env,
         )
 
         killed = _watch(
