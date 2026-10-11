@@ -92,7 +92,9 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "8080:80"
+      # 对外 80（nginx 容器内监听 80）。安全组只需放行 80；
+      # 后端 8000 只绑 127.0.0.1，不直接对外。
+      - "80:80"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1/"]
       interval: 30s
