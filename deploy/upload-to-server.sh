@@ -24,6 +24,17 @@ echo "本地目录 : $LOCAL_DIR"
 echo "服务器   : $SERVER:$REMOTE_DIR/"
 echo
 
+# ---- 0. 前置检查：Basic Auth 密码文件必须先生成 ----
+# （compose 把它挂载进 nginx；文件不存在时 Docker 会创建同名**目录**，
+#   nginx 因读不到密码文件直接起不来。）
+if [ ! -f "$LOCAL_DIR/deploy/.htpasswd" ]; then
+  echo "✗ 缺少 deploy/.htpasswd —— 请先跑："
+  echo "    bash deploy/gen-auth.sh"
+  echo "  （设访问用户名密码，防止净值/持仓公开到公网）"
+  exit 1
+fi
+echo "▸ Basic Auth 密码文件 ✓"
+
 # ---- 1. 先在服务器上建好目录（避免 root 属主混乱）----
 echo "▸ 初始化远端目录..."
 ssh "$SERVER" "mkdir -p '$REMOTE_DIR/data' '$REMOTE_DIR/backend/logs' && echo '  ok'"

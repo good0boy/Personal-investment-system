@@ -91,6 +91,10 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    volumes:
+      # Basic Auth 密码文件（deploy/gen-auth.sh 生成，不进 git）。
+      # 改密码 = 重跑 gen-auth.sh + 上传 + `docker compose restart frontend`，不用重建镜像
+      - ../deploy/.htpasswd:/etc/nginx/.htpasswd:ro
     ports:
       # 对外 80（nginx 容器内监听 80）。安全组只需放行 80；
       # 后端 8000 只绑 127.0.0.1，不直接对外。

@@ -57,3 +57,5 @@ coverage.xml
 # 用途：换口径/改规则前的**可逆备份**（`git diff > 补丁`、旧回测目录搬运）。
 # 是本地参考资料、含 parquet 二进制，**不进 git**；需要时从磁盘取。
 _archive/
+# Basic Auth 密码文件（哈希，但也不该进库）
+deploy/.htpasswd
