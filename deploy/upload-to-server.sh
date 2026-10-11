@@ -35,6 +35,17 @@ if [ ! -f "$LOCAL_DIR/deploy/.htpasswd" ]; then
 fi
 echo "▸ Basic Auth 密码文件 ✓"
 
+# ---- 0.5 环境探测：本地必须有 rsync ----
+# Git for Windows（含 WorkBuddy 便携版）默认不带 rsync。安装方法见
+# docs/部署指南.md §2.2.1（MSYS2 rsync 装到 ~/bin，无需管理员）。
+if ! command -v rsync > /dev/null 2>&1; then
+  echo "✗ 本地没有 rsync（Git Bash 默认不带）。两种解决："
+  echo "  a) 按 docs/部署指南.md §2.2.1 安装到 ~/bin（推荐，支持断点续传）"
+  echo "  b) 临时凑合：tar 管道直传（无断点续传，2.6GB 中断即重来）"
+  exit 1
+fi
+echo "▸ rsync ✓ $(rsync --version | head -1)"
+
 # ---- 1. 先在服务器上建好目录（避免 root 属主混乱）----
 echo "▸ 初始化远端目录..."
 ssh "$SERVER" "mkdir -p '$REMOTE_DIR/data' '$REMOTE_DIR/backend/logs' && echo '  ok'"
