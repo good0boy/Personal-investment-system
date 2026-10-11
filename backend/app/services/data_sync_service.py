@@ -35,13 +35,16 @@ baostock 调用（catalog 自检等）会互踢；子进程同时隔离失败 �
 from __future__ import annotations
 
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 from app.core.config import settings
 from app.core.errors import DataNotReadyError
 from app.core.logging import logger
-from app.core.paths import BACKFILL_STATE_FILE
+from app.core.paths import BACKFILL_STATE_FILE, FUNDAMENTAL_DIR
 from app.core.subprocess_runner import run_with_watchdog
 from app.services import data_store
 
@@ -184,17 +187,84 @@ def sync_factors() -> dict[str, Any]:
     return _run_step("因子重算", [sys.executable, "-m", "factors.calc"], _STEP_TIMEOUT)
 
 
+#: 基本面**原始数据**的数据集目录（逐只通道）。陈旧度监控按这些分别报告。
+_FUNDAMENTAL_DATASETS: tuple[str, ...] = (
+    "financial_indicator",
+    "balance_sheet",
+    "profit_sheet",
+    "cashflow_sheet",
+)
+
+#: 原始数据超过多少天算"陈旧"（财报按季披露，一个季度 ≈ 90 天；
+#: 120 天 ≈ 落后一个完整披露周期，再不补就真的要影响策略了）
+_FUNDAMENTAL_STALE_DAYS = 120
+
+
 def fundamental_staleness() -> dict[str, Any]:
-    """基本面原始数据的陈旧度（按 profit_yoy 因子的最新日期近似）。"""
-    path = data_store.factor_path("profit_yoy", "fundamental")
-    if not path.exists():
-        return {"available": False, "reason": f"缺少 {path.name}"}
-    try:
-        df = data_store.query_duck(f"SELECT max(date) AS d FROM read_parquet('{path.as_posix()}')")
-        last = str(df["d"].iloc[0])[:10] if not df.empty and df["d"].iloc[0] is not None else None
-    except Exception as exc:
-        return {"available": False, "reason": repr(exc)}
-    return {"available": True, "last_date": last}
+    """基本面**原始数据**的陈旧度，按数据集分别报告。
+
+    ★ 2026-10-11 重写：旧版读 `profit_yoy` **因子产物**的 max(date)，而因子
+      由每日跑批重算、日期恒等于"最近一个已收盘交易日" —— 基本面回补连续
+      失败三个月，这里依然报 last_date=昨天，**告警永远不响**（假监控）。
+      现在直接读 `data/raw/fundamental/<dataset>/` 的原始落盘。
+
+    判据用「**每只标的最新公告日的最小值**」（最落后标的的数据年龄），
+    不是全局 max —— 后者会被少数勤快标的掩盖（同 --stale-days 齐步问题）。
+    """
+    root = FUNDAMENTAL_DIR
+    today = date.today()
+    out: dict[str, Any] = {}
+    for ds in _FUNDAMENTAL_DATASETS:
+        d = root / ds
+        if not d.exists():
+            out[ds] = {"available": False, "reason": "目录不存在"}
+            continue
+        files = sorted(d.glob("*.parquet"))
+        if not files:
+            out[ds] = {"available": False, "reason": "无 parquet 文件"}
+            continue
+        try:
+            # 逐只文件里取 (symbol, max(notice_date))，再取这些 max 的 min
+            # = 全市场最落后标的的数据年龄。抽样 200 只（够判陈旧，无需全扫）。
+            sample = files if len(files) <= 200 else files[:: max(1, len(files) // 200)]
+            lst = ",".join(f"'{p.as_posix()}'" for p in sample)
+            df = data_store.query_duck(
+                "SELECT symbol, max(notice_date) AS nd FROM read_parquet(["
+                + lst
+                + "]) GROUP BY symbol"
+            )
+            if df.empty or df["nd"].isna().all():
+                out[ds] = {"available": False, "reason": "notice_date 全为空"}
+                continue
+            nds = df["nd"].dropna()
+            # ★ 用 **p10 分位数**而不是 min（2026-10-11）：min 会被退市/长期停牌股
+            #   拉回 2020 年（实测 oldest=2020-10-31、age=2171 天），于是判据永远
+            #   stale → 变成另一种假告警。p10 衡量"活跃标的的数据年龄"，
+            #   允许约 10% 的僵尸标的更旧（它们本就不该有更新）。
+            oldest = nds.quantile(0.10)
+            last = str(oldest)[:10]
+            age = (today - pd.Timestamp(last).date()).days
+            out[ds] = {
+                "available": True,
+                "sampled_symbols": len(nds),
+                "p10_notice_date": last,
+                "min_notice_date": str(nds.min())[:10],
+                "age_days": age,
+                "stale": age > _FUNDAMENTAL_STALE_DAYS,
+            }
+        except Exception as exc:
+            out[ds] = {"available": False, "reason": repr(exc)}
+    stale = [k for k, v in out.items() if v.get("stale")]
+    return {
+        "available": any(v.get("available") for v in out.values()),
+        "datasets": out,
+        "stale": stale,
+        "stale_threshold_days": _FUNDAMENTAL_STALE_DAYS,
+        "last_date": min(
+            (v["p10_notice_date"] for v in out.values() if v.get("available")),
+            default=None,
+        ),
+    }
 
 
 # ======================================================================

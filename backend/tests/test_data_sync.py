@@ -128,10 +128,38 @@ def test_sync_all_step_failure_does_not_raise(tmp_path, monkeypatch) -> None:
     assert failed and failed[0]["step"] == "因子重算"
 
 
-def test_fundamental_staleness_missing_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(data_store, "FACTOR_DIR", tmp_path / "factor")
+def test_fundamental_staleness_missing_dir(tmp_path, monkeypatch) -> None:
+    """原始数据目录不存在 → available=False（2026-10-11 起监控读原始数据，不再读因子产物）。"""
+    monkeypatch.setattr(ds, "FUNDAMENTAL_DIR", tmp_path / "no_such_fundamental")
     rep = ds.fundamental_staleness()
     assert rep["available"] is False
+    assert all(not v["available"] for v in rep["datasets"].values())
+
+
+def test_fundamental_staleness_flags_old_raw_data(tmp_path, monkeypatch) -> None:
+    """★ 原始数据真的陈旧时要报 stale —— 旧实现读因子产物（日期恒为昨天），
+    连续几个月不回补也永远不会告警（假监控）。"""
+    import pandas as pd
+
+    root = tmp_path / "fundamental"
+    for ds_name in ds._FUNDAMENTAL_DATASETS:
+        d = root / ds_name
+        d.mkdir(parents=True)
+        # 公告日停在 2023-01-01（远超 120 天阈值）
+        pd.DataFrame(
+            {
+                "symbol": [f"sh.60000{i}" for i in range(3)],
+                "report_date": pd.to_datetime(["2022-12-31"] * 3),
+                "notice_date": pd.to_datetime(["2023-01-01"] * 3),
+            }
+        ).to_parquet(d / "sh.600001.parquet", index=False)
+    monkeypatch.setattr(ds, "FUNDAMENTAL_DIR", root)
+    monkeypatch.setattr(ds, "data_store", type("DS", (), {"query_duck": staticmethod(data_store.query_duck)}))
+
+    rep = ds.fundamental_staleness()
+    assert rep["available"] is True
+    assert sorted(rep["stale"]) == sorted(ds._FUNDAMENTAL_DATASETS)
+    assert rep["datasets"]["financial_indicator"]["age_days"] > 120
 
 
 # ======================================================================

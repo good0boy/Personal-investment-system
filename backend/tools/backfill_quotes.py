@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import date, datetime
@@ -75,8 +76,22 @@ def load_state() -> dict[str, Any]:
         return {"version": 1, "symbols": {}, "discovered_at": None}
     try:
         data = json.loads(BACKFILL_STATE_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        logger.warning(f"状态文件损坏，将重建：{BACKFILL_STATE_FILE}")
+    except json.JSONDecodeError as exc:
+        # ★ 损坏文件先改名留存（2026-10-11）：直接重建会**静默覆盖**掉唯一的人工
+        #   排查线索 —— 断点续传的进度、失败原因全在那份文件里。留一份 .corrupt
+        #   才能事后判断"是断电写坏、还是并发写串"。
+        bak = BACKFILL_STATE_FILE.with_suffix(f".corrupt.{datetime.now():%Y%m%d%H%M%S}")
+        try:
+            BACKFILL_STATE_FILE.rename(bak)
+            logger.error(
+                f"状态文件损坏（{exc}），已留存为 {bak.name} 并重建 —— "
+                f"注意：重建后本轮会把全市场重新拉一遍"
+            )
+        except OSError as rename_exc:
+            logger.warning(
+                f"状态文件损坏（{exc}）且备份失败（{rename_exc!r}），将重建："
+                f"{BACKFILL_STATE_FILE}"
+            )
         return {"version": 1, "symbols": {}, "discovered_at": None}
     data.setdefault("symbols", {})
     return data
@@ -85,7 +100,10 @@ def load_state() -> dict[str, Any]:
 def save_state(state: dict[str, Any]) -> None:
     """原子写：先写临时文件再 replace，避免断电留下半截 JSON。"""
     BACKFILL_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = BACKFILL_STATE_FILE.with_suffix(".json.tmp")
+    # ★ tmp 名带 pid（2026-10-11）：固定名会被两个并发进程共用 →
+    #   互相写坏同一个 tmp 再 replace 出半截 JSON（data_store.write_parquet
+    #   早已按 pid+thread 修过同类问题，状态文件没跟上）。
+    tmp = BACKFILL_STATE_FILE.with_suffix(f".json.tmp{os.getpid()}")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(BACKFILL_STATE_FILE)
 
@@ -200,23 +218,44 @@ def _do_one(
         return "failed"
 
     dates = df["date"]
+    last_day = str(dates.max())[:10]
+    # 请求区间右端都取不到数据 = 已退市/长期停牌（baostock 对退市股返回空或
+    # 只到退市日）。标终态，别让它每晚空跑一次。
+    retired = bool(end) and last_day < str(end)[:10]
     rec.update(
         status="ok",
         rows=len(df),
         first_date=str(dates.min())[:10],
-        last_date=str(dates.max())[:10],
+        last_date=last_day,
         error="",
         is_index=is_index,
+        retired=retired,
         elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
         updated_at=datetime.now().isoformat(timespec="seconds"),
     )
+    if retired:
+        logger.info(f"{symbol} 无 {str(end)[:10]} 及之后的行情，判定退市/长期停牌（标记终态）")
     return "ok"
 
 
 # ======================================================================
 # 主流程
 # ======================================================================
+#: 连续失败多少次后放弃（不再每晚重试）。0/未设置 = 不限次数。
+_MAX_ATTEMPTS = 5
+
+
 def _is_done(rec: dict[str, Any], *, latest_trading_day: str | None, incremental: bool) -> bool:
+    # ★ ① 已判定"退市/长期停牌"（baostock 当日无数据）的终态（2026-10-11）：
+    #   它们的 last_date 永远停在退市日 < 最新交易日 → 不加这个标记的话，
+    #   每晚 --incremental 都把它们重拉一遍（实测 222 只/晚，纯浪费配额），
+    #   且 --status 永远显示有 pending，看不出真实健康度。
+    if rec.get("retired"):
+        return True
+    # ★ ② 连续失败上限：attempts 一直在自增却从没人读 → 永久失败的标的
+    #   日复一日重试（日志里只看得到 failed 列表前 5 条样例）。
+    if int(rec.get("attempts") or 0) >= _MAX_ATTEMPTS:
+        return True
     if rec.get("status") != "ok":
         return False
     if not incremental:

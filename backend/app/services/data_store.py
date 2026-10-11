@@ -344,6 +344,14 @@ def merge_parquet(df: pd.DataFrame, path: Path, keys: Sequence[str]) -> dict[str
                 old = pd.read_parquet(path)
                 df = pd.concat([old, df], ignore_index=True)
             except Exception as exc:
+                # ★ 逐只类（symbol 不为 None）的旧文件是"该标的全部历史期"，
+                #   覆盖就会把它回退成只有本次拉到的那几期（2026-10-11 修复）。
+                #   批量类是全量替换语义，覆盖是对的 —— 按调用场景区分。
+                if "symbol" in df.columns and df["symbol"].notna().any():
+                    raise StorageError(
+                        f"读取旧 Parquet 失败（{exc!r}）—— 拒绝覆盖：{path}。"
+                        f"逐只文件承载该标的的全部历史报告期，覆盖会丢历史。"
+                    ) from exc
                 logger.warning(f"读取旧 Parquet 失败，将整体覆盖：{path} —— {exc}")
         return write_parquet(df, path, dedup_keys=keys)
 

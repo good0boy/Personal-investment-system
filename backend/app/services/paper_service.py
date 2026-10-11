@@ -185,6 +185,22 @@ def _save_state(account_id: str, state: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """原子写 JSON（tmp + os.replace）—— 与 `_save_state` / parquet 同纪律。
+
+    裸 `write_text` 在进程被杀/断电时会留下**截断文件**，而 config.json
+    承载 metrics / finished_at / note：读侧吞掉 JSONDecodeError 后前端指标卡
+    整片消失、且返回 HTTP 200，零日志区分"配置损坏"与"从未跑过"（2026-10-11）。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".tmp{os.getpid()}")
+    tmp.write_text(
+        json.dumps(json_safe(payload), ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
 def require_account(account_id: str) -> dict[str, Any]:
     """取账户行，不存在抛 404（API 路径校验用）。"""
     row = meta_repo.get_paper_account(account_id)
@@ -560,10 +576,7 @@ def _run_incremental_day(
             else None
         ),
     }
-    (pdir / "config.json").write_text(
-        json.dumps(json_safe(config), ensure_ascii=False, indent=2, default=str),
-        encoding="utf-8",
-    )
+    _write_json_atomic(pdir / "config.json", config)
 
     # ---- 跨日状态落盘 ----
     _save_state(account_id, state | {"benchmark_base": base})
@@ -818,10 +831,7 @@ def _write_artifacts(
     }
     # ⚠️ 必须先过 json_safe：metrics 里有 numpy 标量，np.int64 不是 int 子类。
     #    不能只靠 default=str 兜底 —— 那会把 20 变 "20"，前端排序就坏（§4 第 20 条）。
-    (out / "config.json").write_text(
-        json.dumps(json_safe(config), ensure_ascii=False, indent=2, default=str),
-        encoding="utf-8",
-    )
+    _write_json_atomic(out / "config.json", config)
     return {
         "account_id": account_id,
         "data_as_of": run_date,
@@ -1005,7 +1015,9 @@ def _load_artifacts(account_id: str) -> dict[str, Any]:
     if cfg_path.exists():
         try:
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError) as exc:
+            # 不吞：指标卡整片消失时，至少要能从日志看出是配置文件坏了
+            logger.error(f"[paper] {cfg_path} 读取失败（指标将显示为空）：{exc!r}")
             cfg = None
     return {
         "nav": nav_df,
@@ -1023,7 +1035,11 @@ def trigger_run_now() -> dict[str, Any]:
     HTTP 请求链路里同步等会超时。扔给 APScheduler 立即执行，
     前端轮询账户的 `last_run_date` 与任务日志看结果。
     """
-    from app.scheduler.scheduler import _make_runner, get_scheduler  # noqa: PLC0415
+    from app.scheduler.scheduler import (  # noqa: PLC0415
+        _make_runner,
+        catch_up_running,
+        get_scheduler,
+    )
 
     ensure_default_account()
     sched = get_scheduler()
@@ -1031,6 +1047,10 @@ def trigger_run_now() -> dict[str, Any]:
         raise PaperError("调度器未运行（scheduler.enabled=false？），无法触发跑批")
     if _RUN_LOCK.locked():
         raise PaperError("模拟盘跑批已在进行中，请勿重复触发")
+    # 补跑期间也要拒：否则入队成功、随后被补跑占锁而静默丢弃 ——
+    # 前端拿到 {"triggered": true} 却永远等不到结果，且无 job 记录、无告警。
+    if catch_up_running():
+        raise PaperError("启动补跑正在进行中，请等补跑结束后再手动触发（否则会被静默丢弃）")
     sched.add_job(
         _make_runner("paper_daily"),
         trigger="date",

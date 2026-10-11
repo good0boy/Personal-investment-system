@@ -214,7 +214,21 @@ def list_jobs() -> list[dict[str, Any]]:
 
 
 def trigger_job_now(job_id: str, run_date: str | None = None) -> dict[str, Any]:
-    """手动触发一次任务（调试用）。"""
+    """手动触发一次任务（调试用）。
+
+    ★ 补跑期间必须拒绝（2026-10-11）：`POST /system/jobs/{id}/run` 直连本函数，
+      绕过了 cron 路径上的 `catch_up_running()` 守卫（scheduler.py:50-55）与
+      `paper_service.trigger_run_now` 的 `_RUN_LOCK` 预检 —— 补跑进行中点它，
+      `run_paper_day` 抢锁失败抛 PaperError → job_run_log 记 **failed** →
+      **误推一条"模拟盘跑批失败"企微告警**，正是 cron 路径当初要避免的那类误报。
+    """
+    if catch_up_running():
+        return {
+            "status": "skipped",
+            "reason": "catch_up_running",
+            "job_id": job_id,
+            "note": "启动补跑正在进行中，请等补跑结束后再手动触发（避免抢锁失败误告警）",
+        }
     return run_job(job_id, run_date, "manual")
 
 

@@ -44,6 +44,7 @@ import json
 import sys
 import threading
 import time
+import zlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -418,6 +419,18 @@ def standardize_batch_df(raw: pd.DataFrame, dataset: str, period: str) -> tuple[
     if code_col not in df.columns:
         raise AppError(f"{dataset} 返回里找不到代码列 {code_col!r}（实际列：{list(df.columns)[:12]}…）")
     df["symbol"] = df[code_col].map(lambda c: normalize(str(c)))
+    # ★ 与逐只通道统一股票池口径（2026-10-11）：批量接口含北交所，实测 yjbb
+    #   20260630 的 11450 行里 bj.* 有 6135 个（54%），而逐只通道用
+    #   `discover_symbols()` + is_target_board_symbol 早已把北交所滤掉 ——
+    #   两套口径并存会让人误以为"目标池有 1.15 万只"，将来因子接 yjbb 会大面积取不到值。
+    before = len(df)
+    df = df[df["symbol"].map(is_target_board_symbol)]
+    dropped_n = before - len(df)
+    if dropped_n:
+        logger.info(
+            f"[{dataset} {period}] 剔除非目标板块 {dropped_n} 行"
+            f"（批量接口含北交所等，逐只通道不采）"
+        )
     df["report_date"] = pd.to_datetime(period, format="%Y%m%d", errors="coerce")
     notice_col = _BATCH_NOTICE_COLS[dataset]
     df["notice_date"] = (
@@ -505,6 +518,19 @@ def _do_batch(client: AkshareClient, state: dict[str, Any], *, retry_failed: boo
     for dataset, spec in BATCH_DATASETS.items():
         if spec.get("disabled"):
             logger.warning(f"批量数据集 {dataset} 跳过：{spec['disabled']}")
+            # ★ 把残留的 failed 记录改判 disabled（2026-10-11）：否则它们会被
+            #   --retry-failed 反复重试、并计入失败总数 → 退出码恒为 1，
+            #   每周例行告警全是"已知不会修的数据集失败"的噪音。
+            bucket_d = state["batch"].setdefault(dataset, {})
+            n_marked = 0
+            for _period, prev in bucket_d.items():
+                if prev.get("status") == "failed":
+                    prev["status"] = "disabled"
+                    prev["error"] = str(spec["disabled"])[:200]
+                    n_marked += 1
+            if n_marked:
+                logger.info(f"[{dataset}] {n_marked} 期 failed 记录改判为 disabled")
+                save_state(state)
             continue
         bucket = state["batch"].setdefault(dataset, {})
         for period in periods:
@@ -539,6 +565,15 @@ def _do_batch(client: AkshareClient, state: dict[str, Any], *, retry_failed: boo
 # ======================================================================
 # 进度展示
 # ======================================================================
+def _stable_hash(s: str) -> int:
+    """跨进程稳定的字符串哈希（分片用）。
+
+    ★ **不能用内置 `hash()`** —— Python 对 str 的哈希默认带随机种子
+      （PYTHONHASHSEED），同一天两次运行会得到不同分片，续传直接失效。
+    """
+    return zlib.crc32(s.encode("utf-8")) & 0xFFFFFFFF
+
+
 def _print_status(state: dict[str, Any]) -> None:
     stocks = state.get("stocks") or {}
     per_dataset: dict[str, dict[str, int]] = {}
@@ -596,8 +631,21 @@ def main() -> int:
         metavar="N",
         help="增量语义：除待办外，同时重拉「上次更新距今超过 N 天」的逐只数据集。"
         "用于周频轮转（如 N=30 → 稳态每周重拉 ~1/4 市场，季报披露后最多滞后 4 周被刷到）。"
+        "★ 调度器用的是 N=6（每周一次全量刷新，但**断点续传有效** —— 本轮已成功的"
+        "标的 updated_at=今天，下次不再入待办）；`--force` 会让续传失效，别用。"
         "批量数据集不受影响 —— 它本来就按报告期记录，新季度自动补。",
     )
+    parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        metavar="K",
+        help="按标的稳定哈希分成 K 片，只跑其中一片（--shard-index 指定第几片，0 起）。"
+        "★ 为什么要分片：全量跑批会把所有标的的 updated_at 刷成同一时刻，"
+        "`--stale-days N` 于是退化成「全动或全不动」的齐步振荡；"
+        "分片与 updated_at 无关，天然均匀且跨进程稳定（内置 hash 对 str 有随机化，不可用）。",
+    )
+    parser.add_argument("--shard-index", type=int, default=0, metavar="I", help="跑第 I 片（默认 0）。")
     args = parser.parse_args()
 
     setup_logging()
@@ -644,6 +692,10 @@ def main() -> int:
         for s in all_symbols:
             rec_ds = (state["stocks"].get(s) or {}).get(dataset) or {}
             st = rec_ds.get("status")
+            # --shard-count/--shard-index：按稳定哈希分片（与 updated_at 无关，
+            #   破齐步）；分片是"这一轮跑哪些"，在其它判据之前筛掉即可。
+            if args.shard_count > 1 and _stable_hash(s) % args.shard_count != args.shard_index:
+                continue
             if args.force:
                 todo.append(s)
             elif args.retry_failed:

@@ -34,12 +34,13 @@ from app.services import data_store
 from app.services.calendar_service import calendar
 from app.services.data_source import symbols as sym_mod
 from app.services.data_source.fuyao_client import FuyaoClient
+from tools.universe import price_limit_pct
 
 #: 快照价/前收的候选列名（fuyao 返回结构未在客户端固化，做宽容解析）
 _PRICE_COLS = ("last_price", "latest_price", "price", "close", "last")
 _PRECLOSE_COLS = ("prev_close", "pre_close", "preclose", "yesterday_close", "last_close")
 
-#: limit_down 判定容差（跌停价 = round(前收×0.9, 2)，快照价可能差一分）
+#: limit_down 判定容差（跌停价 = round(前收×(1-limit), 2)，快照价可能差一分）
 _LIMIT_DOWN_TOL = 1.01
 
 
@@ -197,8 +198,16 @@ def evaluate_holdings(
             reasons.append("quality_broken（基本面转负）")
 
         pc = precloses.get(sym) or _local_preclose(sym)
-        if pc and pc > 0 and price <= pc * 0.9 * _LIMIT_DOWN_TOL:
-            reasons.append(f"limit_down（最新价 {price:.2f} 逼近跌停，前收 {pc:.2f}）")
+        if pc and pc > 0:
+            # ★ 用统一的板块限幅（`tools.universe.price_limit_pct`），不再硬编码 0.9
+            #   （2026-10-11 修复）：主板 ±10% 时碰巧正确，但创业板 ±20% 会**误报**
+            #   （跌 10% 就喊"逼近跌停"），ST ±5% 又**永不报警**（跌停价 9.50 > 9.09）
+            #   —— 恰恰漏掉"跌停卖不出去、要顺延"最该预警的场景。
+            limit = price_limit_pct(sym, today, row.get("st"))
+            if price <= pc * (1.0 - limit) * _LIMIT_DOWN_TOL:
+                reasons.append(
+                    f"limit_down（最新价 {price:.2f} 封跌停，前收 {pc:.2f}，限幅 {limit:.0%}）"
+                )
 
         entry_price = float(row.get("entry_price") or 0)
         if entry_price > 0 and sl_mult > 0:
