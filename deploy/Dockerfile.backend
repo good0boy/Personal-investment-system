@@ -9,6 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     TZ=Asia/Shanghai
 
 WORKDIR /app
@@ -20,9 +21,11 @@ RUN apt-get update \
     && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
-# 先装依赖，利用 layer 缓存
+# 先装依赖，利用 layer 缓存（阿里 PyPI 源：服务器构建快 5~10 倍）
 COPY backend/requirements.txt /app/requirements.txt
-RUN pip install -r /app/requirements.txt
+RUN pip install -r /app/requirements.txt \
+    -i https://mirrors.aliyun.com/pypi/simple/ \
+    --trusted-host mirrors.aliyun.com
 
 # 再拷代码
 COPY backend /app
